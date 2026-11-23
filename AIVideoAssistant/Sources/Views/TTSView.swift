@@ -457,11 +457,17 @@ struct WaveformView: View {
     let active: Bool
 
     private var heights: [CGFloat] {
-        (0..<56).map { index in
-            let base = sin(Double(index) * 0.55) * 0.5 + 0.5
-            let noise = Double((index * 37) % 100) / 100.0
-            return CGFloat(8 + (base * 0.7 + noise * 0.3) * 26)
+        var result: [CGFloat] = []
+        result.reserveCapacity(56)
+        for index in 0..<56 {
+            let phase: Double = Double(index) * 0.55
+            let base: Double = sin(phase) * 0.5 + 0.5
+            let noise: Double = Double((index * 37) % 100) / 100.0
+            let mixed: Double = base * 0.7 + noise * 0.3
+            let barHeight: CGFloat = CGFloat(8.0 + mixed * 26.0)
+            result.append(barHeight)
         }
+        return result
     }
 
     var body: some View {

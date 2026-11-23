@@ -158,14 +158,19 @@ final class MediaAsset: ObservableObject, Identifiable {
 
         let dur = loadedDuration
         let size = loadedSize
-        let thumb = image
+        let box = ImageBox(image: image)
         await MainActor.run {
             self.duration = dur
             self.resolution = size
-            self.thumbnail = thumb
+            self.thumbnail = box.image
             self.isLoading = false
         }
     }
+}
+
+/// 用于跨 actor 传递 NSImage 的轻量包装（NSImage 本身非 Sendable）
+private struct ImageBox: @unchecked Sendable {
+    let image: NSImage?
 }
 
 // MARK: - 时间线
