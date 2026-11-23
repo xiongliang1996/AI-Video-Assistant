@@ -1,0 +1,1317 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI 视频助手 · 交互原型</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#e7e9ef;
+    --win:#f8f9fb;
+    --panel:#ffffff;
+    --panel-2:#fafbfd;
+    --line:rgba(16,18,27,.075);
+    --line-2:rgba(16,18,27,.13);
+    --txt:#15161c;
+    --txt-2:#6b6f7d;
+    --txt-3:#a0a5b2;
+    --accent:#635bff;
+    --accent-2:#a855f7;
+    --accent-soft:rgba(99,91,255,.09);
+    --ok:#12b76a;
+    --warn:#f79009;
+    --danger:#f04438;
+    --r:9px;
+    --sh-sm:0 1px 2px rgba(16,18,27,.06);
+    --sh:0 10px 30px rgba(16,18,27,.10);
+  }
+  html,body{height:100%}
+  body{
+    background:radial-gradient(1200px 700px at 50% -10%,#f2f3f8 0%,var(--bg) 55%,#dfe2ea 100%);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Helvetica Neue",sans-serif;
+    color:var(--txt);
+    -webkit-font-smoothing:antialiased;
+    display:flex;align-items:center;justify-content:center;
+    overflow:hidden;
+  }
+  svg.i{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+  svg.i.fill{fill:currentColor;stroke:none}
+  .sprite{display:none}
+
+  /* ============ 窗口 ============ */
+  #shell{transform-origin:center center}
+  .window{
+    width:1400px;height:876px;background:var(--win);
+    border-radius:13px;overflow:hidden;
+    box-shadow:0 40px 90px -20px rgba(16,18,27,.35),0 0 0 1px rgba(16,18,27,.10),0 2px 6px rgba(16,18,27,.08);
+    display:flex;flex-direction:column;
+  }
+  .titlebar{
+    height:46px;flex:none;display:flex;align-items:center;gap:12px;
+    padding:0 14px;background:linear-gradient(180deg,#fbfcfd,#f4f5f9);
+    border-bottom:1px solid var(--line);position:relative;
+  }
+  .lights{display:flex;gap:8px;margin-right:2px}
+  .lights span{width:12px;height:12px;border-radius:50%;display:block}
+  .l1{background:#ff5f57}.l2{background:#febc2e}.l3{background:#28c840}
+  .tb-title{position:absolute;left:0;right:0;text-align:center;font-size:13px;font-weight:590;letter-spacing:-.1px;pointer-events:none}
+  .tb-title em{font-style:normal;color:var(--txt-3);font-weight:450}
+  .tb-right{margin-left:auto;display:flex;align-items:center;gap:8px;position:relative;z-index:2}
+  .pill{
+    height:26px;display:inline-flex;align-items:center;gap:6px;padding:0 10px;
+    border-radius:7px;background:#fff;border:1px solid var(--line-2);
+    font-size:11.5px;color:var(--txt-2);box-shadow:var(--sh-sm);cursor:default;
+  }
+  .pill b{color:var(--txt);font-weight:560}
+  .dot-ok{width:6px;height:6px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px rgba(18,183,106,.14)}
+
+  .app{flex:1;display:flex;min-height:0}
+
+  /* ============ 侧边栏 ============ */
+  .sidebar{
+    width:216px;flex:none;background:#f3f4f8;border-right:1px solid var(--line);
+    display:flex;flex-direction:column;padding:12px 10px 10px;gap:2px;position:relative;z-index:5;
+  }
+  .brand{display:flex;align-items:center;gap:9px;padding:4px 6px 14px}
+  .brand-logo{
+    width:30px;height:30px;border-radius:8px;flex:none;
+    background:linear-gradient(140deg,#7c6bff,#c26bf5 55%,#ff7ac0);
+    display:grid;place-items:center;color:#fff;
+    box-shadow:0 4px 10px rgba(124,107,255,.35),inset 0 1px 0 rgba(255,255,255,.35);
+  }
+  .brand-logo svg{width:17px;height:17px}
+  .brand-txt{line-height:1.25}
+  .brand-txt b{font-size:13px;font-weight:620;letter-spacing:-.2px;display:block}
+  .brand-txt span{font-size:10.5px;color:var(--txt-3)}
+
+  .sec{font-size:10.5px;font-weight:600;color:var(--txt-3);letter-spacing:.4px;padding:12px 8px 5px}
+  .nav{display:flex;align-items:center;gap:9px;height:31px;padding:0 9px;border-radius:7px;
+    font-size:12.5px;color:#3a3d48;cursor:pointer;user-select:none;transition:background .13s,color .13s}
+  .nav:hover{background:rgba(16,18,27,.045)}
+  .nav.on{background:var(--accent-soft);color:var(--accent);font-weight:590}
+  .nav.on svg.i{stroke-width:1.9}
+  .nav .badge{margin-left:auto;font-size:10px;font-weight:600;padding:1px 5px;border-radius:5px;
+    background:linear-gradient(135deg,var(--accent),var(--accent-2));color:#fff;letter-spacing:.2px}
+  .nav .cnt{margin-left:auto;font-size:10.5px;color:var(--txt-3);font-variant-numeric:tabular-nums}
+
+  .proj{
+    display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:8px;cursor:pointer;
+    border:1px solid transparent;position:relative;
+  }
+  .proj:hover{background:rgba(16,18,27,.045)}
+  .proj.on{background:#fff;border-color:var(--line);box-shadow:var(--sh-sm)}
+  .proj-th{width:26px;height:26px;border-radius:6px;flex:none;background:linear-gradient(135deg,#5b6cff,#b06bff)}
+  .proj-txt{min-width:0;flex:1}
+  .proj-txt b{display:block;font-size:12px;font-weight:560;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .proj-txt span{font-size:10px;color:var(--txt-3)}
+  .proj>svg.i:last-child{color:var(--txt-3)}
+
+  .sb-foot{margin-top:auto;padding-top:8px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:1px}
+  .storage{padding:8px 9px 4px}
+  .storage-bar{height:4px;border-radius:3px;background:rgba(16,18,27,.08);overflow:hidden;margin-top:6px}
+  .storage-bar i{display:block;height:100%;width:42%;border-radius:3px;background:linear-gradient(90deg,var(--accent),var(--accent-2))}
+  .storage small{font-size:10px;color:var(--txt-3);display:flex;justify-content:space-between}
+
+  /* 项目下拉 */
+  .dropdown{
+    position:absolute;left:10px;top:96px;width:238px;background:#fff;border-radius:10px;
+    box-shadow:0 16px 40px rgba(16,18,27,.18),0 0 0 1px rgba(16,18,27,.07);
+    padding:5px;z-index:60;display:none;
+  }
+  .dropdown.show{display:block;animation:pop .14s ease}
+  @keyframes pop{from{opacity:0;transform:translateY(-4px) scale(.985)}to{opacity:1;transform:none}}
+  .dd-item{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:6px;font-size:12.5px;cursor:pointer}
+  .dd-item:hover{background:var(--accent-soft);color:var(--accent)}
+  .dd-sep{height:1px;background:var(--line);margin:5px 4px}
+  .dd-item svg.i{color:var(--txt-3)}
+  .dd-item:hover svg.i{color:var(--accent)}
+
+  /* ============ 主区 ============ */
+  .main{flex:1;min-width:0;display:flex;flex-direction:column;position:relative;background:var(--win)}
+  .view{display:none;flex:1;min-height:0;flex-direction:column}
+  .view.on{display:flex}
+
+  .toolbar{
+    height:50px;flex:none;display:flex;align-items:center;gap:10px;padding:0 16px;
+    border-bottom:1px solid var(--line);background:rgba(255,255,255,.72);backdrop-filter:blur(12px);
+  }
+  .tb-h{font-size:14px;font-weight:620;letter-spacing:-.2px;display:flex;align-items:center;gap:8px}
+  .tb-sub{font-size:11.5px;color:var(--txt-3)}
+  .spacer{flex:1}
+  .chip{
+    display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 9px;border-radius:7px;
+    background:#fff;border:1px solid var(--line-2);font-size:11.5px;color:var(--txt-2);cursor:pointer;
+  }
+  .chip:hover{border-color:rgba(99,91,255,.4);color:var(--accent)}
+  .chip svg.i{width:13px;height:13px}
+
+  .btn{
+    display:inline-flex;align-items:center;justify-content:center;gap:6px;height:29px;padding:0 12px;
+    border-radius:7px;border:1px solid var(--line-2);background:#fff;font-size:12.5px;font-weight:520;
+    color:var(--txt);cursor:pointer;font-family:inherit;transition:.13s;white-space:nowrap;
+  }
+  .btn:hover{background:#f7f8fb;border-color:rgba(16,18,27,.2)}
+  .btn:active{transform:scale(.985)}
+  .btn svg.i{width:14px;height:14px}
+  .btn-primary{
+    background:linear-gradient(135deg,#6f66ff,#a855f7);color:#fff;border:none;
+    box-shadow:0 4px 12px rgba(111,102,255,.30),inset 0 1px 0 rgba(255,255,255,.25);
+  }
+  .btn-primary:hover{background:linear-gradient(135deg,#635bff,#9d4df0);box-shadow:0 6px 16px rgba(111,102,255,.38)}
+  .btn-lg{height:36px;padding:0 18px;font-size:13px;border-radius:8px}
+  .btn-ghost{background:transparent;border-color:transparent}
+  .btn-ghost:hover{background:rgba(16,18,27,.05)}
+  .icon-btn{width:29px;height:29px;padding:0;display:grid;place-items:center;border-radius:7px;
+    border:1px solid transparent;background:transparent;cursor:pointer;color:var(--txt-2)}
+  .icon-btn:hover{background:rgba(16,18,27,.055);color:var(--txt)}
+  .icon-btn.on{background:var(--accent-soft);color:var(--accent)}
+
+  /* ============ 编辑器 ============ */
+  .ed{flex:1;display:flex;min-height:0}
+  .media-col{width:236px;flex:none;border-right:1px solid var(--line);display:flex;flex-direction:column;background:var(--panel-2)}
+  .col-head{height:38px;flex:none;display:flex;align-items:center;gap:6px;padding:0 10px 0 12px;font-size:12px;font-weight:590}
+  .tabs{display:flex;gap:2px;padding:0 8px 8px}
+  .tab{flex:1;height:24px;display:grid;place-items:center;border-radius:6px;font-size:11.5px;color:var(--txt-2);cursor:pointer}
+  .tab:hover{background:rgba(16,18,27,.045)}
+  .tab.on{background:#fff;color:var(--txt);font-weight:560;box-shadow:var(--sh-sm)}
+  .search{
+    margin:0 10px 8px;height:28px;border-radius:7px;border:1px solid var(--line-2);background:#fff;
+    display:flex;align-items:center;gap:6px;padding:0 8px;color:var(--txt-3);font-size:11.5px;
+  }
+  .search svg.i{width:13px;height:13px}
+  .th-grid{flex:1;overflow:auto;padding:0 10px 10px;display:grid;grid-template-columns:1fr 1fr;gap:8px;align-content:start}
+  .th{position:relative;border-radius:7px;overflow:hidden;aspect-ratio:16/10;cursor:grab;border:1px solid rgba(16,18,27,.06)}
+  .th::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,transparent 55%,rgba(0,0,0,.42))}
+  .th:hover{outline:2px solid var(--accent);outline-offset:1px}
+  .th .dur{position:absolute;right:4px;bottom:4px;z-index:2;font-size:9.5px;color:#fff;background:rgba(0,0,0,.55);
+    padding:1px 4px;border-radius:4px;font-variant-numeric:tabular-nums;backdrop-filter:blur(4px)}
+  .th .tag{position:absolute;left:4px;top:4px;z-index:2;color:#fff;opacity:.9}
+  .th .tag svg.i{width:12px;height:12px}
+  .g1{background:linear-gradient(135deg,#5b6cff,#a06bff 60%,#ff8fb1)}
+  .g2{background:linear-gradient(135deg,#0ea5e9,#22d3ee 60%,#a7f3d0)}
+  .g3{background:linear-gradient(135deg,#f59e0b,#f97316 60%,#ef4444)}
+  .g4{background:linear-gradient(135deg,#10b981,#34d399 60%,#a3e635)}
+  .g5{background:linear-gradient(135deg,#8b5cf6,#d946ef 60%,#fb7185)}
+  .g6{background:linear-gradient(135deg,#1e293b,#475569 60%,#94a3b8)}
+  .g7{background:linear-gradient(135deg,#ec4899,#f43f5e 60%,#fbbf24)}
+  .g8{background:linear-gradient(135deg,#0891b2,#2dd4bf 60%,#bef264)}
+  .media-foot{padding:8px 10px;border-top:1px solid var(--line);display:flex;gap:6px}
+  .media-foot .btn{flex:1;height:27px;font-size:11.5px}
+
+  .center-col{flex:1;min-width:0;display:flex;flex-direction:column;background:#f2f3f7}
+  .stage-wrap{flex:1;min-height:0;padding:14px 16px 6px;display:flex;flex-direction:column;align-items:center;justify-content:center}
+  .stage{
+    position:relative;width:100%;max-width:660px;aspect-ratio:16/9;border-radius:9px;overflow:hidden;
+    background:#0b0c11;box-shadow:0 14px 34px -8px rgba(16,18,27,.34),0 0 0 1px rgba(0,0,0,.5);
+  }
+  .scene{position:absolute;inset:0;
+    background:
+      radial-gradient(600px 320px at 22% 18%,rgba(124,107,255,.55),transparent 65%),
+      radial-gradient(500px 300px at 82% 78%,rgba(255,122,192,.42),transparent 62%),
+      radial-gradient(400px 260px at 62% 30%,rgba(56,189,248,.30),transparent 68%),
+      linear-gradient(150deg,#141326,#1c1430 45%,#2a1330);
+  }
+  .scene::after{content:"";position:absolute;inset:0;
+    background:repeating-linear-gradient(90deg,rgba(255,255,255,.028) 0 1px,transparent 1px 3px);opacity:.5}
+  .scene-txt{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);text-align:center;z-index:2}
+  .scene-kicker{font-size:9px;letter-spacing:4px;color:rgba(255,255,255,.5);margin-bottom:10px;font-weight:600}
+  .scene-title{font-size:32px;font-weight:700;color:#fff;letter-spacing:1px;text-shadow:0 6px 24px rgba(0,0,0,.45)}
+  .scene-sub{margin-top:10px;font-size:11.5px;color:rgba(255,255,255,.68);letter-spacing:1.5px}
+  .safe{position:absolute;inset:6%;border:1px dashed rgba(255,255,255,.16);border-radius:4px;pointer-events:none}
+  .safe::before{content:"";position:absolute;inset:6%;border:1px dashed rgba(255,255,255,.09);border-radius:3px}
+  .hud{position:absolute;z-index:3;font-size:10px;color:rgba(255,255,255,.55);font-variant-numeric:tabular-nums;
+    background:rgba(0,0,0,.32);backdrop-filter:blur(6px);padding:2px 6px;border-radius:4px}
+  .hud.tl{left:8px;top:8px}
+  .hud.br{right:8px;bottom:8px}
+  .hud.tr{right:8px;top:8px;display:flex;align-items:center;gap:4px}
+  .hud.tr i{width:5px;height:5px;border-radius:50%;background:#ff5f57;display:block;animation:blink 1.4s infinite}
+  @keyframes blink{50%{opacity:.25}}
+
+  .transport{
+    height:40px;flex:none;display:flex;align-items:center;gap:10px;padding:0 16px;
+    background:#f2f3f7;
+  }
+  .tc{font-size:11.5px;font-variant-numeric:tabular-nums;color:var(--txt-2);letter-spacing:.2px}
+  .tc b{color:var(--txt);font-weight:600}
+  .play-btn{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;border:none;cursor:pointer;
+    background:#fff;box-shadow:0 1px 3px rgba(16,18,27,.16);color:var(--txt)}
+  .play-btn:hover{background:#fff;box-shadow:0 2px 8px rgba(16,18,27,.2)}
+  .vol{display:flex;align-items:center;gap:6px;color:var(--txt-3)}
+  .vol-track{width:64px;height:3px;border-radius:2px;background:rgba(16,18,27,.12);position:relative}
+  .vol-track i{position:absolute;left:0;top:0;bottom:0;width:72%;border-radius:2px;background:var(--txt-2)}
+
+  /* 时间线 */
+  .timeline{height:238px;flex:none;border-top:1px solid var(--line);background:#fbfcfd;display:flex;flex-direction:column}
+  .tl-bar{height:34px;flex:none;display:flex;align-items:center;gap:3px;padding:0 10px;border-bottom:1px solid var(--line)}
+  .tl-bar .lbl{font-size:11.5px;font-weight:590;margin-right:6px;color:var(--txt-2)}
+  .tl-body{flex:1;min-height:0;display:flex;overflow:hidden}
+  .tl-heads{width:78px;flex:none;border-right:1px solid var(--line);background:#fbfcfd;padding-top:22px}
+  .trk-head{height:46px;display:flex;align-items:center;gap:5px;padding:0 8px;font-size:10.5px;color:var(--txt-3)}
+  .trk-head b{font-size:10px;font-weight:600;color:var(--txt-2);background:rgba(16,18,27,.06);
+    padding:1px 4px;border-radius:3px;letter-spacing:.2px}
+  .tl-scroll{flex:1;overflow-x:auto;overflow-y:hidden;position:relative}
+  .tl-inner{position:relative;min-width:100%;height:100%;padding-top:22px}
+  .ruler{position:absolute;left:0;right:0;top:0;height:22px;border-bottom:1px solid var(--line)}
+  .tick{position:absolute;top:0;bottom:0;width:1px;background:rgba(16,18,27,.10)}
+  .tick.maj{background:rgba(16,18,27,.20)}
+  .tick span{position:absolute;left:3px;top:2px;font-size:9px;color:var(--txt-3);font-variant-numeric:tabular-nums}
+  .track{position:relative;height:46px;border-bottom:1px solid rgba(16,18,27,.045)}
+  .track:hover{background:rgba(99,91,255,.028)}
+  .clip{
+    position:absolute;top:5px;height:36px;border-radius:6px;overflow:hidden;cursor:pointer;
+    border:1px solid rgba(255,255,255,.5);box-shadow:0 1px 2px rgba(16,18,27,.16);
+    transition:box-shadow .12s,transform .12s;
+  }
+  .clip:hover{box-shadow:0 3px 10px rgba(16,18,27,.22)}
+  .clip.sel{outline:2px solid var(--accent);outline-offset:1px;z-index:4}
+  .clip .ct{position:absolute;left:0;right:0;top:0;height:100%;display:flex;align-items:center;gap:4px;
+    padding:0 6px;font-size:10px;font-weight:560;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.35);z-index:2}
+  .clip .ct svg.i{width:11px;height:11px}
+  .clip.v1{background:linear-gradient(135deg,#4f7cf7,#6f66ff)}
+  .clip.v2{background:linear-gradient(135deg,#7c5cff,#a855f7)}
+  .clip.v3{background:linear-gradient(135deg,#d946a6,#f472b6)}
+  .clip.a1{background:linear-gradient(135deg,#12b76a,#34d399)}
+  .clip.a2{background:linear-gradient(135deg,#0ea5a4,#2dd4bf)}
+  .clip.s1{background:linear-gradient(135deg,#f59e0b,#fbbf24)}
+  .clip .strips{position:absolute;inset:0;display:flex;opacity:.30;z-index:1}
+  .clip .strips i{flex:1;border-right:1px solid rgba(255,255,255,.45)}
+  .playhead{position:absolute;top:0;bottom:0;width:1.5px;background:#ff3b30;z-index:20;pointer-events:none}
+  .playhead::before{content:"";position:absolute;top:0;left:-4.5px;width:10px;height:10px;background:#ff3b30;
+    border-radius:2px 2px 4px 4px;clip-path:polygon(0 0,100% 0,50% 100%)}
+  .zoom{display:flex;align-items:center;gap:6px;font-size:10.5px;color:var(--txt-3)}
+  .zoom .bar{width:60px;height:3px;border-radius:2px;background:rgba(16,18,27,.12);position:relative}
+  .zoom .bar i{position:absolute;left:0;top:0;bottom:0;width:52%;border-radius:2px;background:var(--txt-2)}
+
+  /* 属性面板 */
+  .prop-col{width:288px;flex:none;border-left:1px solid var(--line);background:var(--panel-2);display:flex;flex-direction:column}
+  .prop-body{flex:1;overflow:auto;padding:0 12px 16px}
+  .grp{padding:12px 0;border-bottom:1px solid var(--line)}
+  .grp:last-child{border-bottom:none}
+  .grp-h{font-size:11px;font-weight:600;color:var(--txt-2);margin-bottom:10px;display:flex;align-items:center;gap:5px}
+  .grp-h svg.i{width:12px;height:12px;color:var(--txt-3)}
+  .row{display:flex;align-items:center;gap:8px;height:27px;font-size:11.5px;color:var(--txt-2)}
+  .row>span:first-child{width:52px;flex:none;color:var(--txt-2);white-space:nowrap}
+  .row .val{margin-left:auto;font-size:11px;color:var(--txt);font-variant-numeric:tabular-nums;
+    background:#fff;border:1px solid var(--line);border-radius:5px;padding:1px 5px;min-width:44px;text-align:center}
+  .slider{flex:1;height:3px;border-radius:2px;background:rgba(16,18,27,.12);position:relative;cursor:pointer}
+  .slider i{position:absolute;left:0;top:0;bottom:0;border-radius:2px;background:var(--accent)}
+  .slider b{position:absolute;top:50%;width:11px;height:11px;border-radius:50%;background:#fff;
+    box-shadow:0 1px 4px rgba(16,18,27,.3);transform:translate(-50%,-50%);left:0}
+  .field{height:28px;border-radius:6px;border:1px solid var(--line-2);background:#fff;display:flex;
+    align-items:center;padding:0 8px;font-size:11.5px;color:var(--txt);gap:6px}
+  .field .ph{color:var(--txt-3)}
+  .seg{display:flex;background:rgba(16,18,27,.06);border-radius:6px;padding:2px;gap:2px}
+  .seg div{flex:1;height:22px;display:grid;place-items:center;font-size:11px;border-radius:4px;cursor:pointer;color:var(--txt-2)}
+  .seg div.on{background:#fff;color:var(--txt);font-weight:560;box-shadow:var(--sh-sm)}
+  .swatches{display:flex;gap:6px}
+  .sw{width:20px;height:20px;border-radius:5px;cursor:pointer;border:1px solid rgba(0,0,0,.08)}
+  .sw.on{outline:2px solid var(--accent);outline-offset:1.5px}
+
+  /* ============ 通用卡片 / 表单 ============ */
+  .page{flex:1;min-height:0;display:flex;gap:16px;padding:16px;overflow:hidden}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:11px;box-shadow:var(--sh-sm)}
+  .card-h{padding:12px 14px 10px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px}
+  .card-h b{font-size:12.5px;font-weight:600}
+  .card-h .hint{font-size:10.5px;color:var(--txt-3);margin-left:auto}
+  .card-b{padding:14px}
+  .lbl{font-size:11.5px;font-weight:560;color:var(--txt-2);margin-bottom:7px;display:flex;align-items:center;gap:5px}
+  .lbl svg.i{width:12px;height:12px;color:var(--txt-3)}
+  .ta{
+    width:100%;min-height:96px;resize:none;border-radius:8px;border:1px solid var(--line-2);background:#fff;
+    padding:9px 10px;font-family:inherit;font-size:12.5px;line-height:1.6;color:var(--txt);outline:none;
+  }
+  .ta:focus{border-color:rgba(99,91,255,.55);box-shadow:0 0 0 3px rgba(99,91,255,.12)}
+  .ta::placeholder{color:var(--txt-3)}
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .cchip{height:25px;padding:0 10px;border-radius:13px;border:1px solid var(--line-2);background:#fff;
+    font-size:11.5px;color:var(--txt-2);cursor:pointer;display:inline-flex;align-items:center;gap:5px;transition:.13s}
+  .cchip:hover{border-color:rgba(99,91,255,.45);color:var(--accent);background:rgba(99,91,255,.04)}
+  .cchip.on{background:linear-gradient(135deg,#6f66ff,#a855f7);border-color:transparent;color:#fff;
+    box-shadow:0 3px 10px rgba(111,102,255,.3)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  .mini{font-size:10.5px;color:var(--txt-3);line-height:1.6}
+  .sel{height:30px;border-radius:7px;border:1px solid var(--line-2);background:#fff;font-size:11.5px;
+    display:flex;align-items:center;justify-content:space-between;padding:0 9px;color:var(--txt);cursor:pointer}
+  .sel svg.i{width:12px;height:12px;color:var(--txt-3)}
+
+  /* AI 生视频 */
+  .gen-left{width:404px;flex:none;display:flex;flex-direction:column;overflow:auto}
+  .gen-right{flex:1;min-width:0;display:flex;flex-direction:column;gap:12px}
+  .res-grid{flex:1;overflow:auto;display:grid;grid-template-columns:1fr 1fr;gap:12px;align-content:start}
+  .res{position:relative;border-radius:9px;overflow:hidden;aspect-ratio:16/10;cursor:pointer;border:1px solid var(--line)}
+  .res .meta{position:absolute;left:0;right:0;bottom:0;padding:22px 9px 8px;z-index:2;
+    background:linear-gradient(180deg,transparent,rgba(0,0,0,.62));color:#fff}
+  .res .meta b{font-size:10.5px;font-weight:560;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .res .meta span{font-size:9.5px;opacity:.72}
+  .res .acts{position:absolute;inset:0;z-index:3;display:flex;align-items:center;justify-content:center;gap:6px;
+    background:rgba(12,14,22,.55);opacity:0;transition:.15s;backdrop-filter:blur(3px)}
+  .res:hover .acts{opacity:1}
+  .res .acts button{height:27px;padding:0 10px;border-radius:6px;border:none;background:rgba(255,255,255,.94);
+    font-size:11px;font-weight:560;color:#15161c;cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:4px}
+  .res .acts button:hover{background:#fff}
+  .res.gen{display:grid;place-items:center;background:linear-gradient(135deg,#eef0ff,#f8f2ff)}
+  .res.gen .ring{width:38px;height:38px;border-radius:50%;border:2.5px solid rgba(99,91,255,.16);
+    border-top-color:var(--accent);animation:spin .9s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .res.gen p{position:absolute;bottom:14px;left:0;right:0;text-align:center;font-size:10.5px;color:var(--txt-2)}
+  .res .badge-ai{position:absolute;left:7px;top:7px;z-index:2;font-size:9px;font-weight:600;letter-spacing:.3px;
+    color:#fff;background:rgba(12,14,22,.5);backdrop-filter:blur(6px);padding:2px 6px;border-radius:5px;
+    display:flex;align-items:center;gap:3px}
+  .res .badge-ai svg.i{width:10px;height:10px}
+
+  /* AI 配音 */
+  .tts-left{width:420px;flex:none;display:flex;flex-direction:column;overflow:auto}
+  .voice-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  .voice{border:1px solid var(--line-2);border-radius:8px;padding:9px 8px;cursor:pointer;text-align:center;background:#fff;transition:.13s}
+  .voice:hover{border-color:rgba(99,91,255,.4);background:rgba(99,91,255,.03)}
+  .voice.on{border-color:var(--accent);background:var(--accent-soft);box-shadow:0 0 0 2px rgba(99,91,255,.10)}
+  .voice .av{width:28px;height:28px;border-radius:50%;margin:0 auto 6px;display:grid;place-items:center;color:#fff;font-size:11px;font-weight:600}
+  .voice b{font-size:11px;display:block;font-weight:560}
+  .voice span{font-size:9.5px;color:var(--txt-3)}
+  .wave{display:flex;align-items:center;gap:2px;height:56px;padding:0 4px}
+  .wave i{flex:1;border-radius:2px;background:linear-gradient(180deg,#7c6bff,#a855f7);opacity:.85}
+  .player{display:flex;align-items:center;gap:12px;padding:14px;border-radius:10px;
+    background:linear-gradient(135deg,#f6f4ff,#fdf5ff);border:1px solid rgba(99,91,255,.16)}
+  .list-row{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:8px;cursor:pointer}
+  .list-row:hover{background:rgba(16,18,27,.04)}
+  .list-row .ic{width:28px;height:28px;border-radius:7px;display:grid;place-items:center;color:#fff;flex:none}
+
+  /* AI 字幕 */
+  .sub-left{width:330px;flex:none;display:flex;flex-direction:column;gap:10px;overflow-y:auto;padding-right:2px}
+  .sub-left .card-b{padding:12px}
+  .sub-left .drop{padding:12px}
+  .drop{border:1.5px dashed rgba(99,91,255,.35);border-radius:10px;background:rgba(99,91,255,.03);
+    padding:16px;text-align:center;cursor:pointer}
+  .drop:hover{background:rgba(99,91,255,.06);border-color:rgba(99,91,255,.55)}
+  .sub-row{display:flex;gap:10px;padding:9px 10px;border-radius:8px;align-items:flex-start}
+  .sub-row:hover{background:rgba(16,18,27,.035)}
+  .sub-row .idx{width:18px;font-size:10px;color:var(--txt-3);padding-top:2px;font-variant-numeric:tabular-nums}
+  .sub-row .time{width:86px;flex:none;font-size:10.5px;color:var(--accent);font-variant-numeric:tabular-nums;
+    font-weight:560;padding-top:1px}
+  .sub-row .txt{flex:1;font-size:12px;line-height:1.5;color:var(--txt)}
+  .sub-row .txt[contenteditable]:focus{outline:2px solid rgba(99,91,255,.4);border-radius:4px;padding:0 3px;margin:0 -3px}
+  .style-preview{position:relative;height:56px;border-radius:8px;overflow:hidden;background:
+    radial-gradient(300px 160px at 30% 30%,rgba(124,107,255,.6),transparent 70%),
+    linear-gradient(140deg,#1a1830,#2a1330)}
+  .style-preview p{position:absolute;left:0;right:0;bottom:12px;text-align:center;color:#fff;font-size:13px;
+    font-weight:600;text-shadow:0 2px 6px rgba(0,0,0,.6)}
+
+  /* 媒体库 */
+  .lib-grid{flex:1;overflow:auto;display:grid;grid-template-columns:repeat(4,1fr);gap:12px;align-content:start;padding:2px}
+  .lib{position:relative;border-radius:9px;overflow:hidden;aspect-ratio:16/10;cursor:pointer;border:1px solid var(--line);background-color:#0b0c11}
+  .lib .info{position:absolute;left:0;right:0;bottom:0;padding:18px 8px 7px;z-index:2;
+    background:linear-gradient(180deg,transparent,rgba(0,0,0,.7));color:#fff}
+  .lib .info b{font-size:10.5px;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:560}
+  .lib .info span{font-size:9px;opacity:.7}
+  .lib .ck{position:absolute;right:6px;top:6px;z-index:3;width:16px;height:16px;border-radius:50%;
+    border:1.5px solid rgba(255,255,255,.7);display:grid;place-items:center;opacity:0;transition:.13s}
+  .lib:hover .ck{opacity:1}
+  .lib.sel .ck{opacity:1;background:var(--accent);border-color:var(--accent);color:#fff}
+  .lib.sel{outline:2px solid var(--accent);outline-offset:1px}
+
+  /* ============ 弹层 ============ */
+  .scrim{position:absolute;inset:0;background:rgba(20,22,32,.34);backdrop-filter:blur(2px);
+    z-index:100;display:none;align-items:center;justify-content:center}
+  .scrim.show{display:flex;animation:fade .16s ease}
+  @keyframes fade{from{opacity:0}to{opacity:1}}
+  .sheet{width:648px;height:470px;background:#fff;border-radius:12px;overflow:hidden;display:flex;
+    box-shadow:0 30px 70px rgba(16,18,27,.34);animation:rise .2s cubic-bezier(.2,.9,.3,1)}
+  @keyframes rise{from{transform:translateY(10px) scale(.98);opacity:0}to{transform:none;opacity:1}}
+  .sheet-nav{width:158px;flex:none;background:#f5f6fa;border-right:1px solid var(--line);padding:12px 8px}
+  .sheet-nav .sn{display:flex;align-items:center;gap:8px;height:30px;padding:0 9px;border-radius:7px;
+    font-size:12px;color:var(--txt-2);cursor:pointer}
+  .sheet-nav .sn:hover{background:rgba(16,18,27,.05)}
+  .sheet-nav .sn.on{background:#fff;color:var(--txt);font-weight:560;box-shadow:var(--sh-sm)}
+  .sheet-main{flex:1;display:flex;flex-direction:column;min-width:0}
+  .sheet-head{height:44px;flex:none;display:flex;align-items:center;padding:0 14px;border-bottom:1px solid var(--line);font-size:12.5px;font-weight:600}
+  .sheet-body{flex:1;overflow:auto;padding:16px}
+  .sheet-foot{height:50px;flex:none;display:flex;align-items:center;gap:8px;padding:0 14px;border-top:1px solid var(--line);background:#fafbfd}
+  .form-row{margin-bottom:14px}
+  .form-row .lbl{margin-bottom:5px}
+  .inp{height:30px;width:100%;border-radius:7px;border:1px solid var(--line-2);background:#fff;padding:0 9px;
+    font-size:12px;font-family:inherit;color:var(--txt);outline:none}
+  .inp:focus{border-color:rgba(99,91,255,.55);box-shadow:0 0 0 3px rgba(99,91,255,.12)}
+  .note{font-size:10.5px;color:var(--txt-3);margin-top:5px;display:flex;align-items:center;gap:4px}
+  .note svg.i{width:11px;height:11px}
+
+  /* toast */
+  .toast{
+    position:absolute;left:50%;bottom:26px;transform:translate(-50%,14px);z-index:200;
+    background:rgba(22,24,34,.94);color:#fff;font-size:12px;padding:9px 15px;border-radius:9px;
+    display:flex;align-items:center;gap:7px;box-shadow:0 12px 30px rgba(16,18,27,.3);
+    opacity:0;pointer-events:none;transition:.22s cubic-bezier(.2,.9,.3,1);backdrop-filter:blur(10px)
+  }
+  .toast.show{opacity:1;transform:translate(-50%,0)}
+  .toast svg.i{width:14px;height:14px;color:#4ade80}
+
+  /* 进度遮罩 */
+  .prog{position:absolute;inset:0;z-index:150;display:none;place-items:center;background:rgba(247,248,251,.72);backdrop-filter:blur(6px)}
+  .prog.show{display:grid}
+  .prog-card{width:320px;background:#fff;border-radius:13px;padding:22px;box-shadow:0 24px 60px rgba(16,18,27,.22);text-align:center}
+  .prog-card .ring{width:46px;height:46px;border-radius:50%;margin:0 auto 14px;border:3px solid rgba(99,91,255,.15);
+    border-top-color:var(--accent);animation:spin .9s linear infinite}
+  .prog-card b{font-size:13px;display:block;margin-bottom:6px}
+  .prog-card p{font-size:11px;color:var(--txt-3);margin-bottom:14px}
+  .pbar{height:5px;border-radius:3px;background:rgba(16,18,27,.08);overflow:hidden}
+  .pbar i{display:block;height:100%;width:0;border-radius:3px;background:linear-gradient(90deg,#6f66ff,#a855f7);transition:width .3s}
+
+  /* 外部提示 */
+  .hint-btn{
+    position:fixed;right:22px;bottom:22px;z-index:300;width:34px;height:34px;border-radius:50%;
+    background:rgba(255,255,255,.9);backdrop-filter:blur(14px);border:1px solid rgba(16,18,27,.10);
+    display:grid;place-items:center;cursor:pointer;color:var(--txt-2);
+    box-shadow:0 8px 24px rgba(16,18,27,.16);font-size:13px;font-weight:600;font-family:inherit
+  }
+  .hint-btn:hover{color:var(--accent);border-color:rgba(99,91,255,.4)}
+  .hint-card{
+    position:fixed;right:22px;bottom:66px;z-index:300;background:rgba(255,255,255,.94);backdrop-filter:blur(16px);
+    border:1px solid rgba(16,18,27,.09);border-radius:11px;padding:11px 13px;font-size:11px;color:var(--txt-2);
+    box-shadow:0 14px 36px rgba(16,18,27,.16);line-height:1.75;width:236px;
+    opacity:0;transform:translateY(6px) scale(.97);pointer-events:none;transition:.18s cubic-bezier(.2,.9,.3,1)
+  }
+  .hint-card.show{opacity:1;transform:none;pointer-events:auto}
+  .hint-card b{color:var(--txt);font-size:11.5px;display:block;margin-bottom:3px}
+  .hint-card kbd{font-family:inherit;background:rgba(16,18,27,.07);border-radius:4px;padding:0 4px;font-size:10px;color:var(--txt)}
+  ::-webkit-scrollbar{width:9px;height:9px}
+  ::-webkit-scrollbar-thumb{background:rgba(16,18,27,.16);border-radius:6px;border:2px solid transparent;background-clip:padding-box}
+  ::-webkit-scrollbar-thumb:hover{background:rgba(16,18,27,.26);background-clip:padding-box}
+  ::-webkit-scrollbar-track{background:transparent}
+</style>
+</head>
+<body>
+
+<svg class="sprite" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3l1.9 5.8a2 2 0 0 0 1.3 1.3L21 12l-5.8 1.9a2 2 0 0 0-1.3 1.3L12 21l-1.9-5.8a2 2 0 0 0-1.3-1.3L3 12l5.8-1.9a2 2 0 0 0 1.3-1.3L12 3z"/></symbol>
+  <symbol id="i-film" viewBox="0 0 24 24"><rect x="2.5" y="3.5" width="19" height="17" rx="2.5"/><path d="M7.5 3.5v17M16.5 3.5v17M2.5 12h19M2.5 7.5h5M2.5 16.5h5M16.5 7.5h5M16.5 16.5h5"/></symbol>
+  <symbol id="i-wand" viewBox="0 0 24 24"><path d="M15 4V2M15 16v-2M8 9h2M20 9h2M17.8 11.8L19 13M17.8 6.2L19 5M3 21l9-9M12.2 6.2L11 5"/></symbol>
+  <symbol id="i-speaker" viewBox="0 0 24 24"><path d="M11 4.5L7 8H4v8h3l4 3.5V4.5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></symbol>
+  <symbol id="i-caption" viewBox="0 0 24 24"><rect x="2.5" y="4.5" width="19" height="15" rx="2.5"/><path d="M7 10.5h3.5M7 14h7M13.5 10.5H17"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2.5"/><circle cx="9" cy="9" r="1.8"/><path d="M21 15.5l-4.5-4.5L5 21"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 3v12M7 11l5 5 5-5M4 21h16"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 21V9M7 13l5-5 5 5M4 3h16"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5l12.5 7.5L7 19.5z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><rect x="7" y="4.5" width="3.5" height="15" rx="1"/><rect x="13.5" y="4.5" width="3.5" height="15" rx="1"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M18 5v14L7 12z"/><path d="M5 5v14"/></symbol>
+  <symbol id="i-fwd" viewBox="0 0 24 24"><path d="M6 5v14l11-7z"/><path d="M19 5v14"/></symbol>
+  <symbol id="i-scissors" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><path d="M20 4L8.5 15.5M14.5 14.5L20 20M8.5 8.5L12 12"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13M10 11v6M14 11v6"/></symbol>
+  <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 7L4 12l5 5"/><path d="M4 12h9a6 6 0 1 1 0 12"/></symbol>
+  <symbol id="i-redo" viewBox="0 0 24 24"><path d="M15 7l5 5-5 5"/><path d="M20 12h-9a6 6 0 1 0 0 12"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M4.5 12.5l5 5 10-11"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7.5a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-type" viewBox="0 0 24 24"><path d="M5 6.5V5h14v1.5M12 5v14M9 19h6"/></symbol>
+  <symbol id="i-shuffle" viewBox="0 0 24 24"><path d="M3 7h4l10 10h4M3 17h4l10-10h4"/><path d="M18 4l3 3-3 3M18 14l3 3-3 3"/></symbol>
+  <symbol id="i-effects" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.5 5.5l2 2M16.5 16.5l2 2M18.5 5.5l-2 2M7.5 16.5l-2 2"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5M3 17.5l9 5 9-5"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h10M18 18h2"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="16" cy="18" r="2"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5.5l3.5 2"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></symbol>
+  <symbol id="i-expand" viewBox="0 0 24 24"><path d="M9 4H4v5M15 4h5v5M15 20h5v-5M9 20H4v-5"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="2.5" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4.5V11h-6.5"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5M4 20h16"/></symbol>
+  <symbol id="i-volume" viewBox="0 0 24 24"><path d="M10 4.5L6 8H3v8h3l4 3.5V4.5z"/><path d="M14 9a4 4 0 0 1 0 6"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 3.5l2.7 5.6 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1L3.2 10l6.1-.9z"/></symbol>
+</svg>
+
+<div id="shell">
+<div class="window">
+  <!-- 标题栏 -->
+  <div class="titlebar">
+    <div class="lights"><span class="l1"></span><span class="l2"></span><span class="l3"></span></div>
+    <div class="tb-title">AI 视频助手 <em>—</em> 品牌短片 v3</div>
+    <div class="tb-right">
+      <span class="pill"><i class="dot-ok"></i><b>已保存</b></span>
+      <span class="pill"><svg class="i"><use href="#i-spark"/></svg>剩余额度 <b>860</b></span>
+    </div>
+  </div>
+
+  <div class="app">
+    <!-- 侧边栏 -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-logo"><svg class="i"><use href="#i-spark"/></svg></div>
+        <div class="brand-txt"><b>AI 视频助手</b><span>v1.0 · 个人版</span></div>
+      </div>
+
+      <div class="sec">当前项目</div>
+      <div class="proj on" id="projBtn">
+        <div class="proj-th"></div>
+        <div class="proj-txt"><b>品牌短片 v3</b><span>1920×1080 · 30fps</span></div>
+        <svg class="i"><use href="#i-chev"/></svg>
+      </div>
+
+      <div class="dropdown" id="projDD">
+        <div class="dd-item"><svg class="i"><use href="#i-check"/></svg>品牌短片 v3</div>
+        <div class="dd-item"><svg class="i"><use href="#i-film"/></svg>产品测评 EP.04</div>
+        <div class="dd-item"><svg class="i"><use href="#i-film"/></svg>旅行 Vlog · 京都</div>
+        <div class="dd-sep"></div>
+        <div class="dd-item"><svg class="i"><use href="#i-plus"/></svg>新建项目…</div>
+      </div>
+
+      <div class="sec">创作</div>
+      <div class="nav on" data-view="editor"><svg class="i"><use href="#i-film"/></svg>编辑器</div>
+      <div class="nav" data-view="gen"><svg class="i"><use href="#i-wand"/></svg>AI 生视频<span class="badge">AI</span></div>
+      <div class="nav" data-view="tts"><svg class="i"><use href="#i-speaker"/></svg>AI 配音</div>
+      <div class="nav" data-view="sub"><svg class="i"><use href="#i-caption"/></svg>AI 字幕</div>
+
+      <div class="sec">素材</div>
+      <div class="nav" data-view="lib"><svg class="i"><use href="#i-image"/></svg>媒体库<span class="cnt">12</span></div>
+
+      <div class="sb-foot">
+        <div class="storage">
+          <small><span>本地缓存</span><span>8.4 / 20 GB</span></small>
+          <div class="storage-bar"><i></i></div>
+        </div>
+        <div class="nav" id="settingsBtn"><svg class="i"><use href="#i-gear"/></svg>设置<span class="cnt">⌘,</span></div>
+      </div>
+    </aside>
+
+    <!-- 主内容 -->
+    <main class="main">
+
+      <!-- ========== 视图 1：编辑器 ========== -->
+      <section class="view on" id="v-editor">
+        <div class="toolbar">
+          <div class="tb-h">品牌短片 v3 <span class="tb-sub">· 3 个片段 · 00:45</span></div>
+          <div class="spacer"></div>
+          <span class="chip"><svg class="i"><use href="#i-grid"/></svg>1920×1080</span>
+          <span class="chip"><svg class="i"><use href="#i-clock"/></svg>30 fps</span>
+          <div style="width:1px;height:18px;background:var(--line-2);margin:0 2px"></div>
+          <button class="icon-btn" title="撤销"><svg class="i"><use href="#i-undo"/></svg></button>
+          <button class="icon-btn" title="重做"><svg class="i"><use href="#i-redo"/></svg></button>
+          <button class="btn" id="previewBtn"><svg class="i"><use href="#i-eye"/></svg>预览</button>
+          <button class="btn btn-primary" id="exportBtn"><svg class="i"><use href="#i-up"/></svg>导出视频</button>
+        </div>
+
+        <div class="ed">
+          <!-- 素材列 -->
+          <div class="media-col">
+            <div class="col-head">素材
+              <div class="spacer"></div>
+              <button class="icon-btn" style="width:24px;height:24px"><svg class="i"><use href="#i-plus"/></svg></button>
+            </div>
+            <div class="tabs">
+              <div class="tab on">媒体</div><div class="tab">文字</div><div class="tab">转场</div><div class="tab">特效</div>
+            </div>
+            <div class="search"><svg class="i"><use href="#i-search"/></svg>搜索素材</div>
+            <div class="th-grid">
+              <div class="th g1"><span class="tag"><svg class="i"><use href="#i-film"/></svg></span><span class="dur">00:06</span></div>
+              <div class="th g2"><span class="tag"><svg class="i"><use href="#i-film"/></svg></span><span class="dur">00:12</span></div>
+              <div class="th g5"><span class="tag"><svg class="i"><use href="#i-spark"/></svg></span><span class="dur">00:05</span></div>
+              <div class="th g3"><span class="tag"><svg class="i"><use href="#i-film"/></svg></span><span class="dur">00:08</span></div>
+              <div class="th g4"><span class="tag"><svg class="i"><use href="#i-image"/></svg></span><span class="dur">—</span></div>
+              <div class="th g7"><span class="tag"><svg class="i"><use href="#i-spark"/></svg></span><span class="dur">00:05</span></div>
+              <div class="th g6"><span class="tag"><svg class="i"><use href="#i-speaker"/></svg></span><span class="dur">00:24</span></div>
+              <div class="th g8"><span class="tag"><svg class="i"><use href="#i-film"/></svg></span><span class="dur">00:09</span></div>
+            </div>
+            <div class="media-foot">
+              <button class="btn"><svg class="i"><use href="#i-upload"/></svg>导入</button>
+              <button class="btn"><svg class="i"><use href="#i-mic"/></svg>录音</button>
+            </div>
+          </div>
+
+          <!-- 中间：预览 + 时间线 -->
+          <div class="center-col">
+            <div class="stage-wrap">
+              <div class="stage">
+                <div class="scene"></div>
+                <div class="scene-txt">
+                  <div class="scene-kicker">AI VIDEO ASSISTANT</div>
+                  <div class="scene-title">品牌短片 2026</div>
+                  <div class="scene-sub">用 AI 讲一个好故事</div>
+                </div>
+                <div class="safe"></div>
+                <div class="hud tl">00:12:04</div>
+                <div class="hud tr"><i></i>PREVIEW</div>
+                <div class="hud br">1920 × 1080 · 100%</div>
+              </div>
+            </div>
+
+            <div class="transport">
+              <button class="icon-btn" id="rewBtn"><svg class="i"><use href="#i-back"/></svg></button>
+              <button class="play-btn" id="playBtn"><svg class="i fill" style="width:12px;height:12px;margin-left:1px"><use href="#i-play"/></svg></button>
+              <button class="icon-btn"><svg class="i"><use href="#i-fwd"/></svg></button>
+              <div class="tc"><b id="tcNow">00:12</b> / 00:45</div>
+              <div class="spacer"></div>
+              <div class="vol"><svg class="i" style="width:13px;height:13px"><use href="#i-volume"/></svg><div class="vol-track"><i></i></div></div>
+              <span class="chip" style="height:24px">1.0×</span>
+              <button class="icon-btn"><svg class="i"><use href="#i-expand"/></svg></button>
+            </div>
+
+            <!-- 时间线 -->
+            <div class="timeline">
+              <div class="tl-bar">
+                <span class="lbl">时间线</span>
+                <button class="icon-btn on" title="选择"><svg class="i" style="width:13px;height:13px"><use href="#i-sliders"/></svg></button>
+                <button class="icon-btn" title="切割"><svg class="i" style="width:13px;height:13px"><use href="#i-scissors"/></svg></button>
+                <button class="icon-btn" title="添加标记"><svg class="i" style="width:13px;height:13px"><use href="#i-plus"/></svg></button>
+                <div style="width:1px;height:16px;background:var(--line-2);margin:0 3px"></div>
+                <button class="icon-btn" title="删除"><svg class="i" style="width:13px;height:13px"><use href="#i-trash"/></svg></button>
+                <div class="spacer"></div>
+                <div class="zoom"><svg class="i" style="width:11px;height:11px"><use href="#i-search"/></svg><div class="bar"><i></i></div></div>
+              </div>
+              <div class="tl-body">
+                <div class="tl-heads">
+                  <div class="trk-head"><b>V1</b>视频</div>
+                  <div class="trk-head"><b>A1</b>音频</div>
+                  <div class="trk-head"><b>S1</b>字幕</div>
+                </div>
+                <div class="tl-scroll" id="tlScroll">
+                  <div class="tl-inner" id="tlInner" style="width:1000px">
+                    <div class="ruler" id="ruler"></div>
+                    <div class="track" id="trkV">
+                      <div class="clip v1" style="left:0px;width:156px" data-name="品牌开场"><div class="strips"><i></i><i></i><i></i><i></i></div><div class="ct"><svg class="i"><use href="#i-film"/></svg>品牌开场</div></div>
+                      <div class="clip v2" style="left:160px;width:260px" data-name="产品特写"><div class="strips"><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="ct"><svg class="i"><use href="#i-film"/></svg>产品特写</div></div>
+                      <div class="clip v3" style="left:424px;width:130px" data-name="AI 生成片段"><div class="strips"><i></i><i></i><i></i><i></i></div><div class="ct"><svg class="i"><use href="#i-spark"/></svg>AI 生成片段</div></div>
+                      <div class="clip v1" style="left:558px;width:182px" data-name="片尾 Logo"><div class="strips"><i></i><i></i><i></i><i></i></div><div class="ct"><svg class="i"><use href="#i-film"/></svg>片尾 Logo</div></div>
+                    </div>
+                    <div class="track" id="trkA">
+                      <div class="clip a1" style="left:0px;width:520px" data-name="背景音乐 · Ambient"><div class="ct"><svg class="i"><use href="#i-speaker"/></svg>背景音乐 · Ambient</div></div>
+                      <div class="clip a2" style="left:180px;width:290px" data-name="AI 配音 · 晓晓"><div class="ct"><svg class="i"><use href="#i-mic"/></svg>AI 配音 · 晓晓</div></div>
+                    </div>
+                    <div class="track" id="trkS">
+                      <div class="clip s1" style="left:20px;width:120px" data-name="字幕 01"><div class="ct">用 AI 讲一个好故事</div></div>
+                      <div class="clip s1" style="left:170px;width:150px" data-name="字幕 02"><div class="ct">从一句描述开始创作</div></div>
+                      <div class="clip s1" style="left:340px;width:130px" data-name="字幕 03"><div class="ct">让灵感即刻成片</div></div>
+                      <div class="clip s1" style="left:490px;width:110px" data-name="字幕 04"><div class="ct">现在就试试</div></div>
+                    </div>
+                    <div class="playhead" id="playhead" style="left:312px"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 属性面板 -->
+          <div class="prop-col">
+            <div class="col-head">属性
+              <div class="spacer"></div>
+              <span style="font-size:10.5px;color:var(--txt-3)" id="propName">产品特写</span>
+            </div>
+            <div class="prop-body">
+              <div class="grp">
+                <div class="grp-h"><svg class="i"><use href="#i-info"/></svg>基础</div>
+                <div class="row"><span>类型</span><span class="val" style="min-width:64px">视频片段</span></div>
+                <div class="row"><span>时长</span><span class="val">10.0s</span></div>
+                <div class="row"><span>起点</span><span class="val">00:06.2</span></div>
+              </div>
+
+              <div class="grp">
+                <div class="grp-h"><svg class="i"><use href="#i-expand"/></svg>变换</div>
+                <div class="row"><span>缩放</span><div class="slider" data-v="62"><i style="width:62%"></i><b style="left:62%"></b></div><span class="val">100%</span></div>
+                <div class="row"><span>旋转</span><div class="slider" data-v="50"><i style="width:50%"></i><b style="left:50%"></b></div><span class="val">0°</span></div>
+                <div class="row"><span>位置</span><div class="field" style="flex:1"><span>X</span><span style="margin-left:auto">0</span></div><div class="field" style="flex:1"><span>Y</span><span style="margin-left:auto">0</span></div></div>
+                <div class="row"><span>不透明度</span><div class="slider" data-v="100"><i style="width:100%"></i><b style="left:100%"></b></div><span class="val">100%</span></div>
+              </div>
+
+              <div class="grp">
+                <div class="grp-h"><svg class="i"><use href="#i-volume"/></svg>音频</div>
+                <div class="row"><span>音量</span><div class="slider" data-v="80"><i style="width:80%"></i><b style="left:80%"></b></div><span class="val">-2.0dB</span></div>
+                <div class="row"><span>淡入</span><div class="field" style="flex:1"><span style="margin-left:auto">0.5s</span></div><div class="field" style="flex:1"><span>淡出</span><span style="margin-left:auto">0.5s</span></div></div>
+                <div class="row"><span>变速</span>
+                  <div class="seg" style="flex:1"><div class="on">1×</div><div>0.5×</div><div>2×</div></div>
+                </div>
+              </div>
+
+              <div class="grp">
+                <div class="grp-h"><svg class="i"><use href="#i-effects"/></svg>效果</div>
+                <div class="row"><span>转场</span>
+                  <div class="sel" style="flex:1"><span>交叉溶解</span><svg class="i"><use href="#i-chev"/></svg></div>
+                </div>
+                <div class="row"><span>滤镜</span>
+                  <div class="sel" style="flex:1"><span>电影暖调</span><svg class="i"><use href="#i-chev"/></svg></div>
+                </div>
+                <div class="row"><span>强度</span><div class="slider" data-v="45"><i style="width:45%"></i><b style="left:45%"></b></div><span class="val">45%</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== 视图 2：AI 生视频 ========== -->
+      <section class="view" id="v-gen">
+        <div class="toolbar">
+          <div class="tb-h"><span style="width:22px;height:22px;border-radius:6px;background:linear-gradient(135deg,#6f66ff,#c26bf5);display:grid;place-items:center;color:#fff"><svg class="i" style="width:12px;height:12px"><use href="#i-wand"/></svg></span>AI 生视频</div>
+          <span class="tb-sub">用一句描述，生成可用片段</span>
+          <div class="spacer"></div>
+          <span class="chip"><svg class="i"><use href="#i-clock"/></svg>本次预估 <b style="color:var(--txt)">40</b> 点</span>
+          <button class="btn"><svg class="i"><use href="#i-folder"/></svg>历史记录</button>
+        </div>
+
+        <div class="page">
+          <!-- 左：参数 -->
+          <div class="card gen-left">
+            <div class="card-h"><b>创作参数</b><span class="hint">步骤 1 / 2</span></div>
+            <div class="card-b" style="display:flex;flex-direction:column;gap:14px">
+              <div>
+                <div class="lbl"><svg class="i"><use href="#i-type"/></svg>提示词</div>
+                <textarea class="ta" id="prompt" placeholder="描述你想要的画面，例如：清晨的咖啡店里，阳光穿过百叶窗，一杯拿铁冒着热气，镜头缓慢推进…"></textarea>
+                <div style="display:flex;justify-content:space-between;margin-top:6px">
+                  <span class="mini" id="pCount">0 / 500</span>
+                  <span class="mini" style="color:var(--accent);cursor:pointer">✨ 帮我润色</span>
+                </div>
+              </div>
+
+              <div>
+                <div class="lbl"><svg class="i"><use href="#i-spark"/></svg>灵感</div>
+                <div class="chips">
+                  <span class="cchip" data-fill="清晨的咖啡店里，阳光穿过百叶窗，一杯拿铁冒着热气，镜头缓慢推进">咖啡店晨光</span>
+                  <span class="cchip" data-fill="霓虹灯下的雨夜街道，一位撑伞的行人走过，镜头跟随移动">雨夜街头</span>
+                  <span class="cchip" data-fill="产品在纯黑背景中缓缓旋转，柔和的轮廓光勾勒边缘">产品旋转</span>
+                </div>
+              </div>
+
+              <div>
+                <div class="lbl"><svg class="i"><use href="#i-effects"/></svg>画面风格</div>
+                <div class="chips" id="styles">
+                  <span class="cchip on">写实</span><span class="cchip">电影感</span><span class="cchip">动漫</span>
+                  <span class="cchip">水彩</span><span class="cchip">像素风</span><span class="cchip">抽象</span>
+                </div>
+              </div>
+
+              <div class="grid3">
+                <div><div class="lbl">时长</div><div class="sel"><span>5 秒</span><svg class="i"><use href="#i-chev"/></svg></div></div>
+                <div><div class="lbl">分辨率</div><div class="sel"><span>1080p</span><svg class="i"><use href="#i-chev"/></svg></div></div>
+                <div><div class="lbl">帧率</div><div class="sel"><span>24 fps</span><svg class="i"><use href="#i-chev"/></svg></div></div>
+              </div>
+
+              <div>
+                <div class="lbl"><svg class="i"><use href="#i-film"/></svg>镜头运动</div>
+                <div class="seg"><div class="on">固定</div><div>推进</div><div>拉远</div><div>摇移</div></div>
+              </div>
+
+              <div>
+                <div class="lbl"><svg class="i"><use href="#i-x"/></svg>负面提示词</div>
+                <div class="field" style="height:30px"><span class="ph">模糊、变形、低画质、水印…</span></div>
+              </div>
+
+              <button class="btn btn-primary btn-lg" id="genBtn" style="width:100%;margin-top:2px">
+                <svg class="i"><use href="#i-spark"/></svg>生成视频
+              </button>
+              <p class="mini" style="text-align:center;margin-top:-6px">预计耗时 40–90 秒 · 消耗 40 点额度</p>
+            </div>
+          </div>
+
+          <!-- 右：结果 -->
+          <div class="gen-right">
+            <div style="display:flex;align-items:center;gap:8px">
+              <b style="font-size:12.5px">生成结果</b>
+              <span class="mini">本次 4 个</span>
+              <div class="spacer"></div>
+              <span class="mini">按时间倒序</span>
+            </div>
+
+            <div class="res-grid" id="resGrid">
+              <div class="res g1"><span class="badge-ai"><svg class="i"><use href="#i-spark"/></svg>AI</span>
+                <div class="acts"><button><svg class="i" style="width:12px;height:12px"><use href="#i-plus"/></svg>加入时间线</button><button><svg class="i" style="width:12px;height:12px"><use href="#i-refresh"/></svg>重新生成</button></div>
+                <div class="meta"><b>咖啡店晨光 · 镜头推进</b><span>5s · 1080p · 写实</span></div>
+              </div>
+              <div class="res g2"><span class="badge-ai"><svg class="i"><use href="#i-spark"/></svg>AI</span>
+                <div class="acts"><button><svg class="i" style="width:12px;height:12px"><use href="#i-plus"/></svg>加入时间线</button><button><svg class="i" style="width:12px;height:12px"><use href="#i-refresh"/></svg>重新生成</button></div>
+                <div class="meta"><b>雨夜街头 · 跟随镜头</b><span>5s · 1080p · 电影感</span></div>
+              </div>
+              <div class="res g5"><span class="badge-ai"><svg class="i"><use href="#i-spark"/></svg>AI</span>
+                <div class="acts"><button><svg class="i" style="width:12px;height:12px"><use href="#i-plus"/></svg>加入时间线</button><button><svg class="i" style="width:12px;height:12px"><use href="#i-refresh"/></svg>重新生成</button></div>
+                <div class="meta"><b>产品旋转 · 轮廓光</b><span>5s · 1080p · 写实</span></div>
+              </div>
+              <div class="res g3"><span class="badge-ai"><svg class="i"><use href="#i-spark"/></svg>AI</span>
+                <div class="acts"><button><svg class="i" style="width:12px;height:12px"><use href="#i-plus"/></svg>加入时间线</button><button><svg class="i" style="width:12px;height:12px"><use href="#i-refresh"/></svg>重新生成</button></div>
+                <div class="meta"><b>黄昏公路 · 航拍拉远</b><span>5s · 1080p · 电影感</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== 视图 3：AI 配音 ========== -->
+      <section class="view" id="v-tts">
+        <div class="toolbar">
+          <div class="tb-h"><span style="width:22px;height:22px;border-radius:6px;background:linear-gradient(135deg,#0ea5e9,#22d3ee);display:grid;place-items:center;color:#fff"><svg class="i" style="width:12px;height:12px"><use href="#i-speaker"/></svg></span>AI 配音</div>
+          <span class="tb-sub">文字转语音 · 多音色可选</span>
+          <div class="spacer"></div>
+          <span class="chip"><svg class="i"><use href="#i-mic"/></svg>已生成 <b style="color:var(--txt)">6</b> 段</span>
+        </div>
+
+        <div class="page">
+          <div class="card tts-left">
+            <div class="card-h"><b>配音文本</b><span class="hint" id="ttsCount">0 字 · 约 0 秒</span></div>
+            <div class="card-b" style="display:flex;flex-direction:column;gap:14px">
+              <textarea class="ta" id="ttsText" style="min-height:110px" placeholder="输入要配音的文字，支持多段落…">每一段好故事，都从一个念头开始。现在，你只需要写下它。</textarea>
+
+              <div>
+                <div class="lbl"><svg class="i"><use href="#i-gear"/></svg>语音引擎</div>
+                <div class="seg" id="provSeg"><div class="on">OpenAI</div><div>Azure</div><div>讯飞</div></div>
+              </div>
+
+              <div>
+                <div class="lbl"><svg class="i"><use href="#i-mic"/></svg>音色 <span style="color:var(--txt-3);font-weight:400">（点击试听）</span></div>
+                <div class="voice-grid">
+                  <div class="voice on"><div class="av" style="background:linear-gradient(135deg,#7c6bff,#a855f7)">晓</div><b>晓晓</b><span>女声 · 温柔</span></div>
+                  <div class="voice"><div class="av" style="background:linear-gradient(135deg,#0ea5e9,#22d3ee)">云</div><b>云希</b><span>男声 · 沉稳</span></div>
+                  <div class="voice"><div class="av" style="background:linear-gradient(135deg,#f59e0b,#f97316)">Nova</div><b>Nova</b><span>女声 · 明亮</span></div>
+                </div>
+              </div>
+
+              <div>
+                <div class="row" style="height:auto"><span style="width:36px">语速</span><div class="slider" data-v="50"><i style="width:50%"></i><b style="left:50%"></b></div><span class="val">1.0×</span></div>
+                <div class="row" style="height:auto;margin-top:8px"><span style="width:36px">音调</span><div class="slider" data-v="50"><i style="width:50%"></i><b style="left:50%"></b></div><span class="val">0</span></div>
+              </div>
+
+              <button class="btn btn-primary btn-lg" id="ttsBtn" style="width:100%"><svg class="i"><use href="#i-speaker"/></svg>生成配音</button>
+            </div>
+          </div>
+
+          <div class="gen-right">
+            <div class="card">
+              <div class="card-h"><b>试听</b><span class="hint">晓晓 · 1.0×</span></div>
+              <div class="card-b">
+                <div class="player">
+                  <button class="play-btn" id="ttsPlay" style="width:34px;height:34px"><svg class="i fill" style="width:13px;height:13px;margin-left:1px"><use href="#i-play"/></svg></button>
+                  <div style="flex:1">
+                    <div class="wave" id="wave"></div>
+                  </div>
+                  <span class="tc">00:08</span>
+                  <button class="icon-btn"><svg class="i"><use href="#i-down"/></svg></button>
+                </div>
+                <div style="display:flex;gap:8px;margin-top:12px">
+                  <button class="btn" style="flex:1"><svg class="i"><use href="#i-plus"/></svg>加入时间线</button>
+                  <button class="btn" style="flex:1"><svg class="i"><use href="#i-refresh"/></svg>换个音色</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="card" style="flex:1;min-height:0;display:flex;flex-direction:column">
+              <div class="card-h"><b>配音片段</b><span class="hint">可拖拽到时间线</span></div>
+              <div style="flex:1;overflow:auto;padding:8px">
+                <div class="list-row"><div class="ic" style="background:linear-gradient(135deg,#7c6bff,#a855f7)"><svg class="i" style="width:13px;height:13px"><use href="#i-speaker"/></svg></div><div style="flex:1"><b style="font-size:11.5px;display:block">开场白 · 晓晓</b><span class="mini">00:08 · 2026-11-23 22:04</span></div><svg class="i" style="color:var(--txt-3);width:13px;height:13px"><use href="#i-play"/></svg></div>
+                <div class="list-row"><div class="ic" style="background:linear-gradient(135deg,#0ea5e9,#22d3ee)"><svg class="i" style="width:13px;height:13px"><use href="#i-speaker"/></svg></div><div style="flex:1"><b style="font-size:11.5px;display:block">产品介绍 · 云希</b><span class="mini">00:14 · 2026-11-23 21:52</span></div><svg class="i" style="color:var(--txt-3);width:13px;height:13px"><use href="#i-play"/></svg></div>
+                <div class="list-row"><div class="ic" style="background:linear-gradient(135deg,#f59e0b,#f97316)"><svg class="i" style="width:13px;height:13px"><use href="#i-speaker"/></svg></div><div style="flex:1"><b style="font-size:11.5px;display:block">结尾号召 · Nova</b><span class="mini">00:05 · 2026-11-23 21:40</span></div><svg class="i" style="color:var(--txt-3);width:13px;height:13px"><use href="#i-play"/></svg></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== 视图 4：AI 字幕 ========== -->
+      <section class="view" id="v-sub">
+        <div class="toolbar">
+          <div class="tb-h"><span style="width:22px;height:22px;border-radius:6px;background:linear-gradient(135deg,#f59e0b,#fbbf24);display:grid;place-items:center;color:#fff"><svg class="i" style="width:12px;height:12px"><use href="#i-caption"/></svg></span>AI 字幕</div>
+          <span class="tb-sub">Whisper 自动识别 · 可逐条校对</span>
+          <div class="spacer"></div>
+          <button class="btn" id="srtBtn"><svg class="i"><use href="#i-down"/></svg>导出 SRT</button>
+          <button class="btn btn-primary" id="subAddBtn"><svg class="i"><use href="#i-plus"/></svg>全部加入时间线</button>
+        </div>
+
+        <div class="page">
+          <div class="sub-left">
+            <div class="card">
+              <div class="card-h"><b>源视频</b></div>
+              <div class="card-b">
+                <div class="drop" id="dropZone">
+                  <svg class="i" style="width:22px;height:22px;color:var(--accent);margin-bottom:6px"><use href="#i-upload"/></svg>
+                  <div style="font-size:12px;font-weight:560">点击选择视频</div>
+                  <div class="mini">或拖拽文件到此处 · MP4 / MOV</div>
+                </div>
+                <div class="list-row" style="margin-top:8px;background:rgba(99,91,255,.05)">
+                  <div class="ic" style="background:linear-gradient(135deg,#5b6cff,#a06bff)"><svg class="i" style="width:13px;height:13px"><use href="#i-film"/></svg></div>
+                  <div style="flex:1;min-width:0"><b style="font-size:11.5px;display:block">品牌短片_粗剪.mp4</b><span class="mini">00:45 · 1080p</span></div>
+                  <svg class="i" style="width:12px;height:12px;color:var(--ok)"><use href="#i-check"/></svg>
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-h"><b>识别设置</b></div>
+              <div class="card-b" style="display:flex;flex-direction:column;gap:12px">
+                <div><div class="lbl">语言</div><div class="seg"><div class="on">中文</div><div>English</div><div>自动</div></div></div>
+                <div><div class="lbl">分段方式</div><div class="seg"><div class="on">整句</div><div>逐字</div></div></div>
+                <div><div class="lbl">最大行长</div><div class="sel"><span>16 字</span><svg class="i"><use href="#i-chev"/></svg></div></div>
+                <button class="btn btn-primary btn-lg" id="subBtn" style="width:100%"><svg class="i"><use href="#i-caption"/></svg>开始识别</button>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-h"><b>字幕样式</b></div>
+              <div class="card-b">
+                <div class="style-preview"><p>用 AI 讲一个好故事</p></div>
+                <div class="row" style="margin-top:10px"><span>字号</span><div class="slider" data-v="55"><i style="width:55%"></i><b style="left:55%"></b></div><span class="val">28px</span></div>
+                <div class="row"><span>颜色</span><div class="swatches" style="margin-left:auto">
+                  <div class="sw on" style="background:#fff"></div><div class="sw" style="background:#ffd166"></div>
+                  <div class="sw" style="background:#7c6bff"></div><div class="sw" style="background:#12b76a"></div>
+                </div></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" style="flex:1;min-width:0;display:flex;flex-direction:column">
+            <div class="card-h"><b>字幕列表</b><span class="hint" id="subCount">4 条 · 平均 3.2 秒</span>
+              <button class="icon-btn" style="margin-left:6px"><svg class="i" style="width:13px;height:13px"><use href="#i-more"/></svg></button>
+            </div>
+            <div style="flex:1;overflow:auto;padding:6px 8px" id="subList">
+              <div class="sub-row"><span class="idx">1</span><span class="time">00:00:00.4</span><span class="txt" contenteditable>用 AI 讲一个好故事</span><svg class="i" style="width:13px;height:13px;color:var(--txt-3)"><use href="#i-play"/></svg></div>
+              <div class="sub-row"><span class="idx">2</span><span class="time">00:00:03.8</span><span class="txt" contenteditable>从一句描述开始创作</span><svg class="i" style="width:13px;height:13px;color:var(--txt-3)"><use href="#i-play"/></svg></div>
+              <div class="sub-row"><span class="idx">3</span><span class="time">00:00:07.2</span><span class="txt" contenteditable>让灵感即刻成片</span><svg class="i" style="width:13px;height:13px;color:var(--txt-3)"><use href="#i-play"/></svg></div>
+              <div class="sub-row"><span class="idx">4</span><span class="time">00:00:10.6</span><span class="txt" contenteditable>现在就试试</span><svg class="i" style="width:13px;height:13px;color:var(--txt-3)"><use href="#i-play"/></svg></div>
+            </div>
+            <div style="padding:8px 12px;border-top:1px solid var(--line);display:flex;align-items:center;gap:8px">
+              <span class="mini">识别置信度 96.2%</span>
+              <div class="spacer"></div>
+              <button class="btn" style="height:26px;font-size:11.5px"><svg class="i" style="width:12px;height:12px"><use href="#i-plus"/></svg>插入一条</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== 视图 5：媒体库 ========== -->
+      <section class="view" id="v-lib">
+        <div class="toolbar">
+          <div class="tb-h">媒体库 <span class="tb-sub">· 12 个素材 · 3.2 GB</span></div>
+          <div class="spacer"></div>
+          <div class="search" style="width:190px;margin:0"><svg class="i"><use href="#i-search"/></svg>搜索文件名</div>
+          <button class="btn"><svg class="i"><use href="#i-sliders"/></svg>筛选</button>
+          <button class="btn btn-primary"><svg class="i"><use href="#i-upload"/></svg>导入素材</button>
+        </div>
+        <div class="page" style="flex-direction:column">
+          <div style="display:flex;gap:6px;align-items:center">
+            <span class="cchip on">全部 12</span><span class="cchip">视频 6</span><span class="cchip">音频 3</span><span class="cchip">图片 2</span><span class="cchip">AI 生成 4</span>
+            <div class="spacer"></div>
+            <span class="mini">按修改时间 ↓</span>
+          </div>
+          <div class="lib-grid" id="libGrid">
+            <div class="lib g1"><div class="ck"><svg class="i" style="width:10px;height:10px"><use href="#i-check"/></svg></div><div class="info"><b>品牌开场.mov</b><span>00:06 · 1920×1080</span></div></div>
+            <div class="lib g2"><div class="ck"><svg class="i" style="width:10px;height:10px"><use href="#i-check"/></svg></div><div class="info"><b>产品特写.mp4</b><span>00:12 · 1920×1080</span></div></div>
+            <div class="lib g5"><div class="ck"><svg class="i" style="width:10px;height:10px"><use href="#i-check"/></svg></div><div class="info"><b>AI_咖啡店晨光.mp4</b><span>00:05 · AI 生成</span></div></div>
+            <div class="lib g3"><div class="ck"><svg class="i" style="width:10px;height:10px"><use href="#i-check"/></svg></div><div class="info"><b>外景_黄昏.mp4</b><span>00:08 · 3840×2160</span></div></div>
+            <div class="lib g4"><div class="ck"><svg class="i" style="width:10px;height:10px"><use href="#i-check"/></svg></div><div class="info"><b>Logo_白底.png</b><span>2000×2000</span></div></div>
+            <div class="lib g7"><div class="ck"><svg class="i" style="width:10px;height:10px"><use href="#i-check"/></svg></div><div class="info"><b>AI_雨夜街头.mp4</b><span>00:05 · AI 生成</span></div></div>
+            <div class="lib g6"><div class="ck"><svg class="i" style="width:10px;height:10px"><use href="#i-check"/></svg></div><div class="info"><b>配乐_Ambient.mp3</b><span>00:24 · 44.1kHz</span></div></div>
+            <div class="lib g8"><div class="ck"><svg class="i" style="width:10px;height:10px"><use href="#i-check"/></svg></div><div class="info"><b>空镜_走廊.mp4</b><span>00:09 · 1920×1080</span></div></div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- 设置弹层 -->
+  <div class="scrim" id="settingsScrim">
+    <div class="sheet">
+      <div class="sheet-nav">
+        <div style="padding:6px 9px 10px;font-size:11px;color:var(--txt-3);font-weight:600">设置</div>
+        <div class="sn on"><svg class="i"><use href="#i-spark"/></svg>OpenAI</div>
+        <div class="sn"><svg class="i"><use href="#i-speaker"/></svg>AI 配音</div>
+        <div class="sn"><svg class="i"><use href="#i-film"/></svg>导出</div>
+        <div class="sn"><svg class="i"><use href="#i-info"/></svg>关于</div>
+      </div>
+      <div class="sheet-main">
+        <div class="sheet-head"><span id="sheetTitle">OpenAI 配置</span>
+          <div class="spacer"></div>
+          <button class="icon-btn" id="closeSheet"><svg class="i"><use href="#i-x"/></svg></button>
+        </div>
+        <div class="sheet-body">
+          <div class="form-row">
+            <div class="lbl">API Key</div>
+            <input class="inp" type="password" value="sk-proj-xxxxxxxxxxxxxxxxxxxxx">
+            <div class="note"><svg class="i"><use href="#i-lock"/></svg>密钥保存在系统钥匙串，不会明文落盘</div>
+          </div>
+          <div class="form-row">
+            <div class="lbl">Base URL</div>
+            <input class="inp" value="https://api.openai.com/v1">
+          </div>
+          <div class="form-row" style="display:flex;gap:10px">
+            <div style="flex:1"><div class="lbl">图像模型</div><div class="sel"><span>DALL·E 3</span><svg class="i"><use href="#i-chev"/></svg></div></div>
+            <div style="flex:1"><div class="lbl">语音识别</div><div class="sel"><span>Whisper-1</span><svg class="i"><use href="#i-chev"/></svg></div></div>
+          </div>
+          <div class="form-row">
+            <div class="lbl">连接状态</div>
+            <div class="field" style="height:32px"><i class="dot-ok"></i><span style="color:var(--ok);font-weight:560">连接正常</span><span style="margin-left:auto;color:var(--txt-3);font-size:10.5px">延迟 182ms</span></div>
+          </div>
+        </div>
+        <div class="sheet-foot">
+          <button class="btn" id="testBtn">测试连接</button>
+          <div class="spacer"></div>
+          <button class="btn" id="cancelBtn">取消</button>
+          <button class="btn btn-primary" id="saveBtn">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 进度遮罩 -->
+  <div class="prog" id="prog">
+    <div class="prog-card">
+      <div class="ring"></div>
+      <b id="progTitle">正在生成视频…</b>
+      <p id="progMsg">AI 正在创作中，请稍候</p>
+      <div class="pbar"><i id="progBar"></i></div>
+    </div>
+  </div>
+
+  <!-- toast -->
+  <div class="toast" id="toast"><svg class="i"><use href="#i-check"/></svg><span id="toastTxt">已完成</span></div>
+</div>
+</div>
+
+<div class="hint-card" id="hintCard">
+  <b>这是可点击的原型</b>
+  左侧导航切换 5 个模块 · 点时间线片段改属性 · 点「生成视频 / 生成配音」看流程 · 点底部「设置」看弹窗
+</div>
+<div class="hint-btn" id="hintBtn">?</div>
+
+<script>
+/* ---------- 自适应缩放 ---------- */
+function fit(){
+  const w=1400,h=876;
+  const s=Math.min(1,(window.innerWidth-48)/w,(window.innerHeight-48)/h);
+  document.getElementById('shell').style.transform='scale('+Math.max(s,0.55)+')';
+}
+window.addEventListener('resize',fit);fit();
+
+/* ---------- 导航切换 ---------- */
+const views={editor:'v-editor',gen:'v-gen',tts:'v-tts',sub:'v-sub',lib:'v-lib'};
+document.querySelectorAll('.nav[data-view]').forEach(n=>{
+  n.addEventListener('click',()=>{
+    document.querySelectorAll('.nav[data-view]').forEach(x=>x.classList.remove('on'));
+    n.classList.add('on');
+    const key=n.dataset.view;
+    document.querySelectorAll('.view').forEach(v=>v.classList.remove('on'));
+    document.getElementById(views[key]).classList.add('on');
+  });
+});
+
+/* ---------- 项目下拉 ---------- */
+const projBtn=document.getElementById('projBtn'),projDD=document.getElementById('projDD');
+projBtn.addEventListener('click',e=>{e.stopPropagation();projDD.classList.toggle('show')});
+document.addEventListener('click',()=>projDD.classList.remove('show'));
+projDD.addEventListener('click',e=>e.stopPropagation());
+
+/* ---------- 时间线刻度 ---------- */
+const PPS=26;
+const ruler=document.getElementById('ruler');
+let html='';
+for(let i=0;i<=38;i++){
+  const x=i*PPS, maj=i%5===0;
+  html+=`<div class="tick ${maj?'maj':''}" style="left:${x}px">${maj?`<span>${i}s</span>`:''}</div>`;
+}
+ruler.innerHTML=html;
+
+/* ---------- 片段选中 ---------- */
+const propName=document.getElementById('propName');
+document.querySelectorAll('.clip').forEach(c=>{
+  c.addEventListener('click',e=>{
+    e.stopPropagation();
+    document.querySelectorAll('.clip').forEach(x=>x.classList.remove('sel'));
+    c.classList.add('sel');
+    propName.textContent=c.dataset.name;
+  });
+});
+document.getElementById('trkV').children[1].classList.add('sel');
+
+/* ---------- 播放 ---------- */
+let playing=false,t=12,raf=null;
+const playBtn=document.getElementById('playBtn'),
+      playhead=document.getElementById('playhead'),
+      tcNow=document.getElementById('tcNow');
+function render(){
+  playhead.style.left=(t*PPS)+'px';
+  const m=String(Math.floor(t/60)).padStart(2,'0'),s=String(Math.floor(t%60)).padStart(2,'0');
+  tcNow.textContent=m+':'+s;
+}
+function tick(){
+  t+=0.033;
+  if(t>45){t=0}
+  render();
+  raf=requestAnimationFrame(tick);
+}
+playBtn.addEventListener('click',()=>{
+  playing=!playing;
+  playBtn.innerHTML=playing
+    ? '<svg class="i fill" style="width:12px;height:12px"><use href="#i-pause"/></svg>'
+    : '<svg class="i fill" style="width:12px;height:12px;margin-left:1px"><use href="#i-play"/></svg>';
+  if(playing){tick()}else{cancelAnimationFrame(raf)}
+});
+document.getElementById('rewBtn').addEventListener('click',()=>{t=0;render()});
+render();
+
+/* ---------- 滑杆点击 ---------- */
+document.querySelectorAll('.slider').forEach(sl=>{
+  sl.addEventListener('click',e=>{
+    const r=sl.getBoundingClientRect();
+    let p=Math.round((e.clientX-r.left)/r.width*100);
+    p=Math.max(0,Math.min(100,p));
+    sl.querySelector('i').style.width=p+'%';
+    sl.querySelector('b').style.left=p+'%';
+  });
+});
+
+/* ---------- 分段控件 ---------- */
+document.querySelectorAll('.seg').forEach(seg=>{
+  seg.querySelectorAll('div').forEach(d=>{
+    d.addEventListener('click',()=>{
+      seg.querySelectorAll('div').forEach(x=>x.classList.remove('on'));
+      d.classList.add('on');
+    });
+  });
+});
+
+/* ---------- 素材分栏 tab ---------- */
+document.querySelectorAll('.tabs .tab').forEach(t=>{
+  t.addEventListener('click',()=>{
+    t.parentElement.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));
+    t.classList.add('on');
+  });
+});
+
+/* ---------- 提示词 ---------- */
+const prompt=document.getElementById('prompt'),pCount=document.getElementById('pCount');
+prompt.addEventListener('input',()=>{pCount.textContent=prompt.value.length+' / 500'});
+document.querySelectorAll('.cchip[data-fill]').forEach(c=>{
+  c.addEventListener('click',()=>{
+    prompt.value=c.dataset.fill;
+    pCount.textContent=prompt.value.length+' / 500';
+  });
+});
+document.querySelectorAll('#styles .cchip').forEach(c=>{
+  c.addEventListener('click',()=>{
+    document.querySelectorAll('#styles .cchip').forEach(x=>x.classList.remove('on'));
+    c.classList.add('on');
+  });
+});
+
+/* ---------- 生成流程 ---------- */
+const prog=document.getElementById('prog'),progBar=document.getElementById('progBar'),
+      progTitle=document.getElementById('progTitle'),progMsg=document.getElementById('progMsg');
+function runProgress(title,msg,dur,cb){
+  progTitle.textContent=title;progMsg.textContent=msg;
+  progBar.style.width='0%';prog.classList.add('show');
+  let p=0;
+  const iv=setInterval(()=>{
+    p+=Math.random()*14+5;
+    if(p>=100){p=100;clearInterval(iv);setTimeout(()=>{prog.classList.remove('show');cb&&cb()},260)}
+    progBar.style.width=p+'%';
+  },dur/9);
+}
+document.getElementById('genBtn').addEventListener('click',()=>{
+  if(!prompt.value.trim()){toast('请先输入提示词');prompt.focus();return}
+  runProgress('正在生成视频…','AI 正在理解你的描述并生成画面',2600,()=>{
+    const grid=document.getElementById('resGrid');
+    const g=['g4','g6','g8','g2'][Math.floor(Math.random()*4)];
+    const el=document.createElement('div');
+    el.className='res '+g;
+    el.innerHTML=`<span class="badge-ai"><svg class="i"><use href="#i-spark"/></svg>AI</span>
+      <div class="acts"><button><svg class="i" style="width:12px;height:12px"><use href="#i-plus"/></svg>加入时间线</button><button><svg class="i" style="width:12px;height:12px"><use href="#i-refresh"/></svg>重新生成</button></div>
+      <div class="meta"><b>${prompt.value.slice(0,18)}</b><span>5s · 1080p · 新生成</span></div>`;
+    grid.prepend(el);
+    toast('生成完成，已加入结果区');
+  });
+});
+document.getElementById('exportBtn').addEventListener('click',()=>{
+  runProgress('正在导出视频…','编码 H.264 · 1920×1080 · 30fps',3000,()=>toast('导出完成：品牌短片_v3.mp4'));
+});
+document.getElementById('subBtn').addEventListener('click',()=>{
+  runProgress('正在识别字幕…','Whisper 正在分析音频',2600,()=>toast('识别完成，共 4 条字幕'));
+});
+document.getElementById('ttsBtn').addEventListener('click',()=>{
+  runProgress('正在合成配音…','晓晓 · 1.0× · MP3',2000,()=>toast('配音已生成'));
+});
+document.getElementById('subAddBtn').addEventListener('click',()=>toast('已添加 4 条字幕到 S1 轨道'));
+document.getElementById('srtBtn').addEventListener('click',()=>toast('已导出 subtitles.srt'));
+
+/* ---------- 配音字数 ---------- */
+const ttsText=document.getElementById('ttsText'),ttsCount=document.getElementById('ttsCount');
+function calcTTS(){
+  const n=ttsText.value.length;
+  ttsCount.textContent=n+' 字 · 约 '+Math.max(1,Math.round(n/4.2))+' 秒';
+}
+ttsText.addEventListener('input',calcTTS);calcTTS();
+
+/* ---------- 音色选择 ---------- */
+document.querySelectorAll('.voice').forEach(v=>{
+  v.addEventListener('click',()=>{
+    document.querySelectorAll('.voice').forEach(x=>x.classList.remove('on'));
+    v.classList.add('on');
+  });
+});
+
+/* ---------- 波形 ---------- */
+const wave=document.getElementById('wave');
+let wv='';
+for(let i=0;i<64;i++){
+  const h=18+Math.abs(Math.sin(i*0.55))*30+Math.random()*10;
+  wv+=`<i style="height:${Math.min(h,54)}px"></i>`;
+}
+wave.innerHTML=wv;
+document.getElementById('ttsPlay').addEventListener('click',e=>{
+  e.currentTarget.innerHTML='<svg class="i fill" style="width:12px;height:12px"><use href="#i-pause"/></svg>';
+  setTimeout(()=>{e.currentTarget.innerHTML='<svg class="i fill" style="width:13px;height:13px;margin-left:1px"><use href="#i-play"/></svg>'},2200);
+});
+
+/* ---------- 媒体库多选 ---------- */
+document.querySelectorAll('#libGrid .lib').forEach(l=>{
+  l.addEventListener('click',()=>l.classList.toggle('sel'));
+});
+
+/* ---------- 设置弹层 ---------- */
+const scrim=document.getElementById('settingsScrim');
+document.getElementById('settingsBtn').addEventListener('click',()=>scrim.classList.add('show'));
+document.getElementById('closeSheet').addEventListener('click',()=>scrim.classList.remove('show'));
+document.getElementById('cancelBtn').addEventListener('click',()=>scrim.classList.remove('show'));
+document.getElementById('saveBtn').addEventListener('click',()=>{scrim.classList.remove('show');toast('设置已保存到钥匙串')});
+document.getElementById('testBtn').addEventListener('click',()=>toast('连接正常 · 延迟 182ms'));
+scrim.addEventListener('click',e=>{if(e.target===scrim)scrim.classList.remove('show')});
+document.querySelectorAll('.sheet-nav .sn').forEach(s=>{
+  s.addEventListener('click',()=>{
+    document.querySelectorAll('.sheet-nav .sn').forEach(x=>x.classList.remove('on'));
+    s.classList.add('on');
+    document.getElementById('sheetTitle').textContent=s.textContent+' 配置';
+  });
+});
+
+/* ---------- toast ---------- */
+let toastTimer=null;
+function toast(msg){
+  const el=document.getElementById('toast');
+  document.getElementById('toastTxt').textContent=msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer=setTimeout(()=>el.classList.remove('show'),2200);
+}
+
+/* ---------- 提示卡 ---------- */
+const hintCard=document.getElementById('hintCard');
+document.getElementById('hintBtn').addEventListener('click',()=>hintCard.classList.toggle('show'));
+
+/* ---------- URL 路由（便于逐屏查看） ---------- */
+(function(){
+  const h=(location.hash||'').replace('#','');
+  if(h==='settings'){document.getElementById('settingsScrim').classList.add('show');return}
+  if(h && views[h]){
+    document.querySelectorAll('.nav[data-view]').forEach(x=>x.classList.toggle('on',x.dataset.view===h));
+    document.querySelectorAll('.view').forEach(v=>v.classList.remove('on'));
+    document.getElementById(views[h]).classList.add('on');
+  }
+  if(h==='hint'){hintCard.classList.add('show')}
+})();
+
+/* ---------- 键盘 ---------- */
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){scrim.classList.remove('show')}
+  if(e.code==='Space'&&!/TEXTAREA|INPUT/.test(document.activeElement.tagName)){
+    e.preventDefault();playBtn.click();
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,30 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# SwiftPM
+.build/
+.swiftpm/
+Package.resolved.bak
+
+# 构建产物
+AIVideoAssistant/dist/
+*.app
+*.zip
+
+# Xcode
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# WorkBuddy 本地数据
+.workbuddy-ai/
+
+# 临时文件
+*.log

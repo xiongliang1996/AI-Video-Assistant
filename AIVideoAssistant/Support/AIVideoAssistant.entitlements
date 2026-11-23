@@ -1,0 +1,10 @@
+# macOS entitlements - 应用权限配置
+# 转为 Xcode 项目后需要在 Signing & Capabilities 中配置
+
+# 需要的权限:
+# - com.apple.security.app-sandbox = false (视频编辑需要文件系统完整访问)
+# - com.apple.security.device.microphone = true (录音/语音输入)
+# - com.apple.security.device.camera = true (摄像头采集)
+# - com.apple.security.files.user-selected.read-write = true (用户选择的文件读写)
+# - com.apple.security.network.client = true (网络访问 API)
+# - com.apple.security.files.downloads.read-write = true (下载目录访问)
