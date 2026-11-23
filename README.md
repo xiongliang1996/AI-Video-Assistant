@@ -38,13 +38,16 @@
 
 ### 方式一：下载构建产物
 
-1. 打开 [Actions](https://github.com/xiongliang1996/AI-Video-Assistant/actions/workflows/build.yml) 页面，进入最近一次成功的构建
-2. 在页面底部 **Artifacts** 下载 `AIVideoAssistant-macOS`
-3. 解压后把 `AI视频助手.app` 拖进「应用程序」
+1. 打开 [Releases](https://github.com/xiongliang1996/AI-Video-Assistant/releases/latest) 页面
+2. 下载 `AIVideoAssistant-macOS.zip`，解压后把 `AI视频助手.app` 拖进「应用程序」
+
+> **说明**：CI 目前使用 `macos-15-intel` 运行器（GitHub 的 arm64 macOS 运行器容量紧张，排队 15 分钟后会被取消），因此产物是 **x86_64 架构**。在 Apple Silicon 上运行需要 Rosetta 2（首次打开系统会提示安装）。
+>
+> 想要原生 arm64 版本，用下面的本地构建方式，或在 `.github/workflows/build.yml` 里把 `runs-on: macos-15-intel` 改回 `macos-latest`。
 
 > 应用为 ad-hoc 签名，首次打开需右键 → 打开，或在「系统设置 → 隐私与安全性」中允许。
 
-### 方式二：从源码构建
+### 方式二：从源码构建（原生架构）
 
 ```bash
 git clone https://github.com/xiongliang1996/AI-Video-Assistant.git
