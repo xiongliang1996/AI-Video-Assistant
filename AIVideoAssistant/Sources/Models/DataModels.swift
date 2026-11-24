@@ -233,6 +233,93 @@ enum TransitionType: String, Codable, CaseIterable, Hashable {
     }
 }
 
+/// 转场是否真的会渲染。
+/// 判定规则与 CompositionBuilder 完全一致：相邻摆放、前一段有素材余量、重叠时长够用。
+enum TransitionStatus: Equatable {
+    /// 没设转场
+    case unset
+    /// 会生效，实际重叠 overlap 秒
+    case active(overlap: Double)
+    /// 前面没有可衔接的片段
+    case noPrevious
+    /// 与前一段之间有空隙
+    case gap(Double)
+    /// 与前一段重叠摆放
+    case overlap(Double)
+    /// 前一段素材已用尽，没有多余尾巴可吃
+    case noTail
+    /// 能算出来的重叠太短
+    case tooShort(Double)
+
+    var isProblem: Bool {
+        switch self {
+        case .unset, .active: return false
+        default: return true
+        }
+    }
+
+    var isActive: Bool {
+        if case .active = self { return true }
+        return false
+    }
+
+    var label: String {
+        switch self {
+        case .unset:
+            return "未设置转场"
+        case .active(let overlap):
+            return String(format: "已生效 · 重叠 %.1f s", overlap)
+        case .noPrevious:
+            return "前面没有片段，转场无处衔接"
+        case .gap(let value):
+            return String(format: "与前一段间隔 %.2f s，不会生成转场", value)
+        case .overlap(let value):
+            return String(format: "与前一段重叠 %.2f s，不会生成转场", value)
+        case .noTail:
+            return "上一段素材已用尽，没有多余尾巴"
+        case .tooShort(let value):
+            return String(format: "可用重叠只有 %.2f s，低于 0.12 s", value)
+        }
+    }
+
+    /// 一句话修复建议（为空表示不需要处理）
+    var hint: String? {
+        switch self {
+        case .unset, .active:
+            return nil
+        case .noPrevious:
+            return "把这一段移到某个片段后面，或给它前面补一段素材"
+        case .gap:
+            return "点「吸附到上一段」把它贴上去"
+        case .overlap:
+            return "点「吸附到上一段」消除重叠，或直接右移让两段相接"
+        case .noTail:
+            return "把上一段的右边缘往回缩一点，给它留出可用的尾巴"
+        case .tooShort:
+            return "把两段留长一些，或给上一段多留点尾巴"
+        }
+    }
+
+    /// 是否可以用「吸附到上一段」一键修复
+    var canSnap: Bool {
+        switch self {
+        case .gap, .overlap: return true
+        default: return false
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .unset: return "minus"
+        case .active: return "checkmark.circle.fill"
+        case .noPrevious: return "questionmark.circle"
+        case .gap, .overlap: return "arrow.left.and.right"
+        case .noTail: return "scissors"
+        case .tooShort: return "timer"
+        }
+    }
+}
+
 /// 关键帧之间的补间方式
 enum Easing: String, Codable, CaseIterable, Identifiable {
     case linear, easeIn, easeOut, easeInOut
@@ -771,6 +858,58 @@ enum TimelineLayout {
             }
         }
         return result.sorted { $0.startTime < $1.startTime }
+    }
+
+    // MARK: 转场诊断用到的纯函数
+
+    /// 相邻判定的容差，与 builder 保持一致
+    static let transitionContiguity: Double = 0.06
+    /// 低于这个重叠时长就不做转场了
+    static let transitionMinOverlap: Double = 0.12
+    /// 单次转场的最长时长
+    static let transitionMaxOverlap: Double = 1.5
+
+    /// 诊断某段片段的入场转场能不能生效。
+    /// - Parameters:
+    ///   - previous: 同轨道同层、起点更早的最近一段
+    ///   - previousAssetDuration: 上一段素材的原始时长；拿不到时跳过「素材余量」检查
+    static func transitionStatus(for item: TimelineItem,
+                                 previous: TimelineItem?,
+                                 previousAssetDuration: Double? = nil) -> TransitionStatus {
+        guard item.transition != .none else { return .unset }
+        guard let prev = previous else { return .noPrevious }
+
+        // 1. 必须紧贴：重叠摆放不会生成转场指令
+        let gap = item.startTime - prev.endTime
+        if gap > transitionContiguity { return .gap(gap) }
+        if gap < -transitionContiguity { return .overlap(-gap) }
+
+        let prevSpeed = min(max(prev.properties.speed, 0.1), 4.0)
+        var budget = min(item.transitionDuration, prev.duration * 0.5, item.duration * 0.5)
+
+        // 2. 前一段必须还有没被用掉的素材，转场靠吃这段尾巴
+        if let assetDuration = previousAssetDuration, assetDuration > 0 {
+            let available = assetDuration - max(0, prev.sourceStart)
+            let consumed = min(prev.duration, available / prevSpeed) * prevSpeed
+            let extraSource = available - consumed
+            guard extraSource > 0.02 else { return .noTail }
+            budget = min(budget, extraSource / prevSpeed)
+        }
+
+        budget = min(budget, transitionMaxOverlap)
+        guard budget >= transitionMinOverlap else { return .tooShort(max(0, budget)) }
+        return .active(overlap: budget)
+    }
+
+    /// 把片段贴到前一段末尾后，是否会和后面的片段撞上
+    /// - Returns: 吸附后的起点；撞车时返回 nil
+    static func snappedStart(item: TimelineItem,
+                             previousEnd: Double,
+                             nextStart: Double) -> Double? {
+        let target = max(0, previousEnd)
+        guard abs(target - item.startTime) > 0.001 else { return nil }
+        if nextStart.isFinite, target + item.duration > nextStart + 0.001 { return nil }
+        return target
     }
 }
 

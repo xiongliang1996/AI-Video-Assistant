@@ -63,6 +63,11 @@ struct AIVideoAssistantApp: App {
                 Button("删除所选片段") { appState.removeSelectedItem() }
                     .keyboardShortcut(.delete, modifiers: [.command])
                     .disabled(appState.selectedItemIDs.isEmpty)
+
+                Divider()
+
+                Button("吸附所有转场片段") { appState.snapAllTransitions() }
+                    .keyboardShortcut("t", modifiers: [.command, .shift])
             }
             CommandMenu("AI") {
                 Button("AI 生视频") { appState.selectedPanel = .generate }

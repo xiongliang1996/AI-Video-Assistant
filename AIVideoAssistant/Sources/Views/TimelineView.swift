@@ -127,6 +127,12 @@ struct TimelineView: View {
                                              size: 24))
                 .help("给所选片段加入/取消转场")
 
+            Button {
+                appState.snapAllTransitions()
+            } label: { Image(systemName: "arrow.left.to.line") }
+                .buttonStyle(IconButtonStyle(size: 24))
+                .help("把所有转场片段吸附成相邻（⌘⇧T）")
+
             Rectangle().fill(Theme.line2).frame(width: 1, height: 14)
 
             Button {
@@ -210,10 +216,17 @@ struct TimelineView: View {
 
     private func clip(_ item: TimelineItem) -> some View {
         let width = max(28, CGFloat(item.duration) * pps)
+        let status = appState.transitionStatus(for: item)
+        let overlapWidth: CGFloat = {
+            if case .active(let overlap) = status { return CGFloat(overlap) * pps }
+            return 0
+        }()
         return ClipView(item: item,
                         width: width,
                         selected: appState.selectedItemIDs.contains(item.id),
                         tileWidth: thumbTileWidth,
+                        transitionStatus: status,
+                        transitionWidth: overlapWidth,
                         onSelect: {
                             appState.select(item.id,
                                             additive: NSEvent.modifierFlags.contains(.command))
@@ -634,6 +647,10 @@ struct ClipView: View {
     let selected: Bool
     /// 一张缩略图的目标宽度（跟随时间线缩放）
     var tileWidth: CGFloat = 52
+    /// 入场转场的实际状态，决定角标颜色
+    var transitionStatus: TransitionStatus = .unset
+    /// 转场重叠区间在时间线上的像素宽度
+    var transitionWidth: CGFloat = 0
 
     var onSelect: () -> Void
     var onMove: (CGSize, Bool) -> Void
@@ -701,14 +718,37 @@ struct ClipView: View {
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         .overlay(alignment: .topLeading) {
             if item.transition != .none {
-                Image(systemName: item.transition.icon)
+                // 生效：白底 + 强调色图标（片段本身就是强调色，纯色圆点会糊在一起）
+                // 未生效：橙色警示，跟属性面板的警告条同一套语言
+                Image(systemName: transitionStatus.isProblem ? "exclamationmark" : item.transition.icon)
                     .font(.system(size: 7.5, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(transitionStatus.isProblem ? Color.white
+                                     : (transitionStatus.isActive ? Theme.accent : Color.white))
                     .padding(2.5)
-                    .background(Circle().fill(Color.black.opacity(0.35)))
+                    .background(
+                        Circle().fill(transitionStatus.isProblem
+                                      ? Theme.warning
+                                      : (transitionStatus.isActive ? Color.white.opacity(0.95)
+                                         : Color.black.opacity(0.35)))
+                    )
                     .padding(.leading, 3)
                     .padding(.top, 3)
                     .allowsHitTesting(false)
+            }
+        }
+        .overlay(alignment: .leading) {
+            // 生效的转场把重叠区间画出来，一眼能看出「这两段在叠」
+            if transitionWidth > 0, transitionStatus.isActive {
+                ZStack(alignment: .leading) {
+                    LinearGradient(colors: [Color.white.opacity(0.34), Color.white.opacity(0.02)],
+                                   startPoint: .leading,
+                                   endPoint: .trailing)
+                    Rectangle()
+                        .fill(Color.white.opacity(0.85))
+                        .frame(width: 1.5)
+                }
+                .frame(width: min(max(4, transitionWidth), width))
+                .allowsHitTesting(false)
             }
         }
         .overlay(alignment: .leading) {

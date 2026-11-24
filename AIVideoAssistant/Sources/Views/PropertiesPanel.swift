@@ -298,6 +298,8 @@ struct PropertiesPanel: View {
                           ),
                           range: 0.15...1.5,
                           display: String(format: "%.1f s", item.transitionDuration))
+
+                transitionStatusRow(item)
             }
 
             groupHeader("circle.dotted", "淡入淡出")
@@ -311,6 +313,76 @@ struct PropertiesPanel: View {
                       value: prop(item, \.fadeOut),
                       range: 0...2,
                       display: String(format: "%.1f s", item.properties.fadeOut))
+        }
+    }
+
+    /// 转场能不能生效，直接在面板里说清楚，别让人以为是渲染坏了
+    @ViewBuilder
+    private func transitionStatusRow(_ item: TimelineItem) -> some View {
+        let status = appState.transitionStatus(for: item)
+
+        if status.isProblem {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(Theme.warning)
+                        .padding(.top, 1)
+                    Text(status.label)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(Theme.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+
+                if let hint = status.hint {
+                    Text(hint)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Theme.text2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.leading, 15)
+                }
+
+                if status.canSnap {
+                    Button {
+                        appState.snapToPrevious(item.id)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.left.to.line")
+                                .font(.system(size: 9))
+                            Text("吸附到上一段")
+                                .font(.system(size: 10.5, weight: .medium))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 9)
+                        .frame(height: 22)
+                        .background(RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(Theme.accent))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.leading, 15)
+                    .padding(.top, 1)
+                }
+            }
+            .padding(9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Theme.warning.opacity(0.08)))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Theme.warning.opacity(0.26), lineWidth: 1))
+            .padding(.top, 8)
+
+        } else if case .active(let overlap) = status {
+            HStack(spacing: 5) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(Theme.ok)
+                Text(String(format: "转场生效 · 与前一段重叠 %.1f s", overlap))
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.text2)
+                Spacer(minLength: 0)
+            }
+            .padding(.top, 7)
         }
     }
 

@@ -242,6 +242,84 @@ final class AppState: ObservableObject {
         return nil
     }
 
+    // MARK: - 转场
+
+    /// 同轨道同层、起点更早的最近一段（转场靠它吃尾巴）
+    func previousClip(before item: TimelineItem) -> TimelineItem? {
+        clips(on: item.trackKind, lane: item.trackLane)
+            .filter { $0.id != item.id && $0.startTime < item.startTime - 0.001 }
+            .max { $0.startTime < $1.startTime }
+    }
+
+    /// 某段片段的入场转场当前是什么状态
+    func transitionStatus(for item: TimelineItem) -> TransitionStatus {
+        let prev = previousClip(before: item)
+        return TimelineLayout.transitionStatus(for: item,
+                                               previous: prev,
+                                               previousAssetDuration: prev.flatMap { assetDuration(for: $0) })
+    }
+
+    /// 把片段贴到前一段末尾，让转场能生效
+    @discardableResult
+    func snapToPrevious(_ itemID: UUID) -> Bool {
+        guard let item = timeline.first(where: { $0.id == itemID }),
+              let prev = previousClip(before: item) else {
+            notify("这一段前面没有片段")
+            return false
+        }
+        let nextStart = neighbors(of: item).nextStart
+        guard let target = TimelineLayout.snappedStart(item: item,
+                                                       previousEnd: prev.endTime,
+                                                       nextStart: nextStart) else {
+            notify("后面空间不够，先给这一段挪个位置")
+            return false
+        }
+        beginEdit()
+        var copy = item
+        copy.startTime = target
+        updateItem(copy)
+        notify("已吸附到上一段末尾")
+        return true
+    }
+
+    /// 把所有设置了转场的片段批量吸附成相邻
+    /// - Returns: 实际被移动的片段数
+    @discardableResult
+    func snapAllTransitions() -> Int {
+        let targets = timeline
+            .filter { $0.transition != .none && $0.trackKind == .video }
+            .sorted { $0.startTime < $1.startTime }
+        guard !targets.isEmpty else {
+            notify("时间线上还没有设置转场")
+            return 0
+        }
+
+        var moved = 0
+        var blocked = 0
+        beginEdit()
+        for item in targets {
+            guard let prev = previousClip(before: item) else { continue }
+            let nextStart = neighbors(of: item).nextStart
+            guard let target = TimelineLayout.snappedStart(item: item,
+                                                           previousEnd: prev.endTime,
+                                                           nextStart: nextStart) else {
+                if abs(item.startTime - prev.endTime) > TimelineLayout.transitionContiguity { blocked += 1 }
+                continue
+            }
+            var copy = item
+            copy.startTime = target
+            updateItem(copy)
+            moved += 1
+        }
+
+        if moved == 0 {
+            notify(blocked > 0 ? "有 \(blocked) 段后面空间不够，没能吸附" : "所有转场片段已经相邻")
+        } else {
+            notify(blocked > 0 ? "已吸附 \(moved) 段，\(blocked) 段空间不够跳过" : "已吸附 \(moved) 段转场片段")
+        }
+        return moved
+    }
+
     // MARK: - 项目
 
     func createProject(named name: String = "未命名项目") {
