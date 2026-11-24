@@ -498,6 +498,19 @@ enum CompositionBuilder {
         outLayer.setOpacity(outOpacity, at: range.start)
         inLayer.setOpacity(0, at: range.start)
 
+        // 任一侧有关键帧时，把转场区间切成小段，逐段把关键帧的缩放 / 不透明度
+        // 叠加到转场进度上（AVFoundation 的 ramp 只能两点线性）
+        if prev.item.properties.hasAnyKeyframes || cur.item.properties.hasAnyKeyframes {
+            applySteppedTransition(transition: cur.item.transition,
+                                   prev: prev, cur: cur,
+                                   outLayer: outLayer, inLayer: inLayer,
+                                   renderSize: renderSize,
+                                   start: startSeconds,
+                                   duration: duration)
+            instruction.layerInstructions = [outLayer, inLayer]
+            return instruction
+        }
+
         switch cur.item.transition {
         case .none:
             break
@@ -517,13 +530,17 @@ enum CompositionBuilder {
 
         case .slideLeft:
             let dx = renderSize.width
+            // translatedBy 作用在「源坐标」上，会被 fit 缩放放大数倍；
+            // 这里要的是渲染坐标系里的位移，所以用 concatenating
             outLayer.setTransformRamp(fromStart: outBase,
-                                      toEnd: outBase.translatedBy(x: -dx, y: 0),
+                                      toEnd: outBase.concatenating(CGAffineTransform(translationX: -dx, y: 0)),
                                       timeRange: range)
-            inLayer.setTransformRamp(fromStart: inBase.translatedBy(x: dx, y: 0),
+            inLayer.setTransformRamp(fromStart: inBase.concatenating(CGAffineTransform(translationX: dx, y: 0)),
                                      toEnd: inBase,
                                      timeRange: range)
-            inLayer.setOpacityRamp(fromStartOpacity: inOpacity, toEndOpacity: inOpacity, timeRange: range)
+            // 等值的 opacity ramp 会被 AVFoundation 当成 no-op，导致入场层一直透明（中段黑屏），
+            // 这里直接给个定值
+            inLayer.setOpacity(inOpacity, at: range.start)
 
         case .zoomIn:
             let center = CGPoint(x: renderSize.width / 2, y: renderSize.height / 2)
@@ -534,13 +551,98 @@ enum CompositionBuilder {
                                      timeRange: range)
         }
 
-        // 层顺序：前 → 后
-        if cur.item.transition == .slideLeft {
-            instruction.layerInstructions = [inLayer, outLayer]
-        } else {
-            instruction.layerInstructions = [outLayer, inLayer]
-        }
+        // 层顺序：前 → 后（滑动转场入场层在下，避免把前一段整块盖住）
+        instruction.layerInstructions = [outLayer, inLayer]
         return instruction
+    }
+
+    // MARK: - 带关键帧的转场
+
+    /// 把转场区间切成小段，逐段计算「转场进度 × 关键帧值」，再发 ramp
+    private static func applySteppedTransition(transition: TransitionType,
+                                               prev: ClipPlan,
+                                               cur: ClipPlan,
+                                               outLayer: AVMutableVideoCompositionLayerInstruction,
+                                               inLayer: AVMutableVideoCompositionLayerInstruction,
+                                               renderSize: CGSize,
+                                               start: Double,
+                                               duration: Double) {
+        let steps = max(6, min(48, Int((duration / 0.05).rounded())))
+        let dx = renderSize.width
+        let center = CGPoint(x: renderSize.width / 2, y: renderSize.height / 2)
+
+        func clamp01(_ v: Double) -> Float { Float(min(1, max(0, v))) }
+
+        func outScale(_ t: Double) -> CGAffineTransform {
+            baseTransform(plan: prev, renderSize: renderSize,
+                          scaleOverride: prev.item.properties.animatedValue(.scale, at: t - prev.item.startTime))
+        }
+        func inScale(_ t: Double) -> CGAffineTransform {
+            baseTransform(plan: cur, renderSize: renderSize,
+                          scaleOverride: cur.item.properties.animatedValue(.scale, at: t - cur.item.startTime))
+        }
+        func outAlpha(_ t: Double) -> Float {
+            clamp01(prev.item.properties.animatedValue(.opacity, at: t - prev.item.startTime))
+        }
+        func inAlpha(_ t: Double) -> Float {
+            clamp01(cur.item.properties.animatedValue(.opacity, at: t - cur.item.startTime))
+        }
+
+        /// 某一时刻两层的 (不透明度, 变换)
+        func state(at t: Double) -> (outAlpha: Float, inAlpha: Float,
+                                     outTransform: CGAffineTransform,
+                                     inTransform: CGAffineTransform) {
+            let p = min(1, max(0, (t - start) / max(0.001, duration)))
+            let outA = outAlpha(t)
+            let inA = inAlpha(t)
+            let outT = outScale(t)
+            let inT = inScale(t)
+
+            switch transition {
+            case .none:
+                return (outA, inA, outT, inT)
+            case .crossDissolve:
+                return (outA * Float(1 - p), inA * Float(p), outT, inT)
+            case .fadeThroughBlack:
+                if p < 0.5 {
+                    return (outA * Float(1 - p * 2), 0, outT, inT)
+                } else {
+                    return (0, inA * Float((p - 0.5) * 2), outT, inT)
+                }
+            case .slideLeft:
+                return (outA, inA,
+                        outT.concatenating(CGAffineTransform(translationX: -dx * CGFloat(p), y: 0)),
+                        inT.concatenating(CGAffineTransform(translationX: dx * CGFloat(1 - p), y: 0)))
+            case .zoomIn:
+                let zoom = 0.86 + 0.14 * p
+                return (outA * Float(1 - p), inA * Float(p),
+                        outT,
+                        inT.concatenating(scaleAbout(zoom, center: center)))
+            }
+        }
+
+        var previous = state(at: start)
+        for step in 1...steps {
+            let t = start + duration * Double(step) / Double(steps)
+            let current = state(at: t)
+            let from = CMTime(seconds: start + duration * Double(step - 1) / Double(steps), preferredTimescale: 600)
+            let range = CMTimeRange(start: from,
+                                    duration: CMTime(seconds: duration / Double(steps), preferredTimescale: 600))
+
+            outLayer.setOpacityRamp(fromStartOpacity: previous.outAlpha,
+                                    toEndOpacity: current.outAlpha,
+                                    timeRange: range)
+            inLayer.setOpacityRamp(fromStartOpacity: previous.inAlpha,
+                                   toEndOpacity: current.inAlpha,
+                                   timeRange: range)
+            outLayer.setTransformRamp(fromStart: previous.outTransform,
+                                      toEnd: current.outTransform,
+                                      timeRange: range)
+            inLayer.setTransformRamp(fromStart: previous.inTransform,
+                                     toEnd: current.inTransform,
+                                     timeRange: range)
+            previous = current
+        }
     }
 
     // MARK: - 变换
