@@ -479,6 +479,114 @@ enum TimelineLayout {
     static func overlaps(_ aStart: Double, _ aEnd: Double, _ bStart: Double, _ bEnd: Double) -> Bool {
         aStart < bEnd - 0.001 && aEnd > bStart + 0.001
     }
+
+    // MARK: 智能剪辑用到的纯函数
+
+    /// 合并重叠 / 相邻的时间区间，并按起点排序
+    static func mergeRanges(_ ranges: [ClosedRange<Double>]) -> [ClosedRange<Double>] {
+        let sorted = ranges
+            .map { max(0, $0.lowerBound)...max(0, $0.upperBound) }
+            .filter { $0.upperBound - $0.lowerBound > 0.001 }
+            .sorted { $0.lowerBound < $1.lowerBound }
+        var merged: [ClosedRange<Double>] = []
+        for range in sorted {
+            if let last = merged.last, range.lowerBound <= last.upperBound + 0.001 {
+                merged[merged.count - 1] = last.lowerBound...max(last.upperBound, range.upperBound)
+            } else {
+                merged.append(range)
+            }
+        }
+        return merged
+    }
+
+    /// 某时刻之前一共被删掉了多少秒
+    static func removedBefore(_ time: Double, ranges: [ClosedRange<Double>]) -> Double {
+        var total: Double = 0
+        for range in ranges {
+            if range.upperBound <= time {
+                total += range.upperBound - range.lowerBound
+            } else if range.lowerBound < time {
+                total += time - range.lowerBound
+            }
+        }
+        return total
+    }
+
+    /// 区间 [start, end) 减去要删掉的部分，返回保留下来的若干段
+    static func subtract(_ start: Double, _ end: Double,
+                         ranges: [ClosedRange<Double>]) -> [(start: Double, end: Double)] {
+        guard end > start else { return [] }
+        var kept: [(start: Double, end: Double)] = []
+        var cursor = start
+        for range in ranges where range.upperBound > start && range.lowerBound < end {
+            if range.lowerBound > cursor {
+                kept.append((cursor, min(end, range.lowerBound)))
+            }
+            cursor = max(cursor, range.upperBound)
+            if cursor >= end { break }
+        }
+        if cursor < end { kept.append((cursor, end)) }
+        return kept.filter { $0.end - $0.start > 0.05 }
+    }
+
+    /// 在若干时间点把片段切开（时间点须落在片段内部）
+    static func split(_ item: TimelineItem, at times: [Double]) -> [TimelineItem] {
+        let points = times
+            .filter { $0 > item.startTime + 0.05 && $0 < item.endTime - 0.05 }
+            .sorted()
+        guard !points.isEmpty else { return [item] }
+
+        let speed = max(0.1, item.properties.speed)
+        var pieces: [TimelineItem] = []
+        var cursor = item.startTime
+        for point in points + [item.endTime] {
+            guard point > cursor + 0.01 else { continue }
+            var piece = item
+            piece.id = UUID()
+            piece.startTime = cursor
+            piece.duration = point - cursor
+            piece.sourceStart = item.sourceStart + (cursor - item.startTime) * speed
+            piece.transition = .none
+            pieces.append(piece)
+            cursor = point
+        }
+        return pieces.isEmpty ? [item] : pieces
+    }
+
+    /// 波纹删除：删掉若干时间区间，并把后面的内容整体前移
+    /// - 完全落在区间内的片段会被丢弃，被截断的片段会拆成多段
+    static func rippleDelete(items: [TimelineItem], ranges: [ClosedRange<Double>]) -> [TimelineItem] {
+        let cuts = mergeRanges(ranges)
+        guard !cuts.isEmpty else { return items }
+
+        var result: [TimelineItem] = []
+        for item in items {
+            let speed = max(0.1, item.properties.speed)
+            let kept = subtract(item.startTime, item.endTime, ranges: cuts)
+            guard !kept.isEmpty else { continue }
+
+            if kept.count == 1,
+               abs(kept[0].start - item.startTime) < 0.001,
+               abs(kept[0].end - item.endTime) < 0.001 {
+                // 完全没被切到，只需整体前移
+                var moved = item
+                moved.startTime = max(0, item.startTime - removedBefore(item.startTime, ranges: cuts))
+                result.append(moved)
+                continue
+            }
+
+            for part in kept {
+                var piece = item
+                piece.id = UUID()
+                piece.startTime = max(0, part.start - removedBefore(part.start, ranges: cuts))
+                piece.duration = part.end - part.start
+                piece.sourceStart = item.sourceStart + (part.start - item.startTime) * speed
+                piece.transition = .none
+                result.append(piece)
+            }
+        }
+        return result.sorted { $0.startTime < $1.startTime }
+    }
 }
 
 func formatTimecode(_ seconds: Double) -> String {

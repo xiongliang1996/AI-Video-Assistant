@@ -45,6 +45,7 @@ final class AppState: ObservableObject {
     // 导航
     @Published var selectedPanel: Panel = .editor
     @Published var showingSettings = false
+    @Published var showingSmartCut = false
 
     // 素材与时间线
     @Published var mediaLibrary: [MediaAsset] = []
@@ -571,6 +572,137 @@ final class AppState: ObservableObject {
         if let index = timeline.firstIndex(where: { $0.id == item.id }) {
             timeline[index] = copy
         }
+    }
+
+    // MARK: - 智能剪辑（按停顿切片 / 去停顿）
+
+    /// 分析结果（针对当前目标片段）
+    @Published var speechAnalysis: SpeechAnalysis?
+    @Published var isAnalyzingSpeech = false
+    @Published var smartCutTargetID: UUID?
+
+    /// 检测参数
+    @Published var silenceThresholdDB: Float = -34
+    @Published var minPauseDuration: Double = 0.35
+    @Published var minSpeechDuration: Double = 0.25
+
+    var smartCutTarget: TimelineItem? {
+        if let id = smartCutTargetID, let item = timeline.first(where: { $0.id == id }) { return item }
+        return defaultSpeechClip
+    }
+
+    /// 优先挑配音轨（A2），其次任意音频片段
+    var defaultSpeechClip: TimelineItem? {
+        let audio = timeline.filter { $0.type == .audio }
+        return audio.first { $0.trackLane == 1 } ?? audio.first
+    }
+
+    /// 目标片段覆盖的文件区间（秒）
+    private func sourceRange(of item: TimelineItem) -> ClosedRange<Double> {
+        let speed = max(0.1, item.properties.speed)
+        let start = max(0, item.sourceStart)
+        return start...(start + item.duration * speed)
+    }
+
+    /// 文件时间 → 时间线时间
+    private func timelineTime(_ fileTime: Double, in item: TimelineItem) -> Double {
+        let speed = max(0.1, item.properties.speed)
+        return item.startTime + (fileTime - item.sourceStart) / speed
+    }
+
+    /// 落在目标片段内部的停顿（时间线时间）
+    func pauses(in item: TimelineItem, includeEdges: Bool = false) -> [ClosedRange<Double>] {
+        guard let analysis = speechAnalysis else { return [] }
+        let source = sourceRange(of: item)
+        var result: [ClosedRange<Double>] = []
+        for silence in analysis.silences {
+            guard silence.upperBound > source.lowerBound + 0.02,
+                  silence.lowerBound < source.upperBound - 0.02 else { continue }
+            let start = max(silence.lowerBound, source.lowerBound)
+            let end = min(silence.upperBound, source.upperBound)
+            guard end - start > 0.05 else { continue }
+            if !includeEdges {
+                // 只处理片段内部的停顿，头尾留给用户自己裁
+                guard silence.lowerBound > source.lowerBound + 0.05,
+                      silence.upperBound < source.upperBound - 0.05 else { continue }
+            }
+            result.append(timelineTime(start, in: item)...timelineTime(end, in: item))
+        }
+        return result
+    }
+
+    func analyzeSpeech(for item: TimelineItem? = nil) async {
+        guard let clip = item ?? smartCutTarget, let url = clip.assetURL else {
+            notify("先选一个带音频的片段")
+            return
+        }
+        smartCutTargetID = clip.id
+        isAnalyzingSpeech = true
+        let threshold = silenceThresholdDB
+        let minSilence = minPauseDuration
+        let minSpeech = minSpeechDuration
+
+        let analysis = await withCheckedContinuation { (continuation: CheckedContinuation<SpeechAnalysis?, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: SilenceDetector.analyze(url: url,
+                                                                       thresholdDB: threshold,
+                                                                       minSilence: minSilence,
+                                                                       minSpeech: minSpeech))
+            }
+        }
+        isAnalyzingSpeech = false
+        guard let analysis else {
+            notify("这个文件读不出音频")
+            return
+        }
+        speechAnalysis = analysis
+        let count = pauses(in: clip).count
+        notify("识别到 \(count) 处停顿，可剪掉约 \(String(format: "%.1f", analysis.silenceDuration)) 秒")
+    }
+
+    /// 按停顿中点把目标片段切成多段
+    func splitAtPauses() {
+        guard let clip = smartCutTarget else { return }
+        let ranges = pauses(in: clip)
+        guard !ranges.isEmpty else {
+            notify("没有可切的停顿")
+            return
+        }
+        let points = ranges.map { ($0.lowerBound + $0.upperBound) / 2 }
+        let pieces = TimelineLayout.split(clip, at: points)
+        guard pieces.count > 1 else {
+            notify("停顿太靠近片段边缘")
+            return
+        }
+        beginEdit()
+        timeline.removeAll { $0.id == clip.id }
+        timeline.append(contentsOf: pieces)
+        timeline.sort { $0.startTime < $1.startTime }
+        selectedItemIDs = Set(pieces.map(\.id))
+        notify("已按停顿切成 \(pieces.count) 段")
+    }
+
+    /// 删掉停顿并把后面的内容整体前移（波纹删除），全轨同步移动保持对齐
+    func rippleDeletePauses() {
+        guard let clip = smartCutTarget else { return }
+        let ranges = pauses(in: clip)
+        guard !ranges.isEmpty else {
+            notify("没有可删的停顿")
+            return
+        }
+        let removed = ranges.reduce(0) { $0 + ($1.upperBound - $1.lowerBound) }
+        beginEdit()
+        let kept = TimelineLayout.rippleDelete(items: timeline, ranges: ranges)
+        let alive = Set(kept.map(\.id))
+        timeline = kept
+        selectedItemIDs = selectedItemIDs.intersection(alive)
+        currentTime = min(currentTime, totalDuration)
+        notify("已剪掉 \(String(format: "%.1f", removed)) 秒停顿，时长缩短到 \(formatTimecode(totalDuration))")
+    }
+
+    func resetSpeechAnalysis() {
+        speechAnalysis = nil
+        smartCutTargetID = nil
     }
 
     // MARK: - 撤销 / 重做

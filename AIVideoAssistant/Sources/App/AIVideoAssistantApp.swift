@@ -69,6 +69,9 @@ struct AIVideoAssistantApp: App {
                 Button("AI 字幕") { appState.selectedPanel = .subtitle }
                     .keyboardShortcut("l", modifiers: .command)
                 Divider()
+                Button("智能剪辑（按停顿）…") { appState.showingSmartCut = true }
+                    .keyboardShortcut("k", modifiers: [.command, .shift])
+                Divider()
                 Button("设置…") { appState.showingSettings = true }
                     .keyboardShortcut(",", modifiers: .command)
             }

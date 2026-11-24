@@ -21,6 +21,10 @@ struct MainWindowView: View {
             SettingsView()
                 .environmentObject(appState)
         }
+        .sheet(isPresented: $appState.showingSmartCut) {
+            SmartCutView()
+                .environmentObject(appState)
+        }
         .overlay(alignment: .bottom) { toastLayer }
         .overlay { processingLayer }
         .alert("提示", isPresented: errorBinding) {

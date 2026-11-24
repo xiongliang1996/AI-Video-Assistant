@@ -107,6 +107,12 @@ struct TimelineView: View {
                 .help("在播放头处切割所选片段")
 
             Button {
+                appState.showingSmartCut = true
+            } label: { Image(systemName: "wand.and.stars") }
+                .buttonStyle(IconButtonStyle(size: 24))
+                .help("智能剪辑：按语音停顿切片 / 去停顿")
+
+            Button {
                 if let item = appState.selectedItem {
                     var copy = item
                     copy.transition = copy.transition == .none ? .crossDissolve : .none
