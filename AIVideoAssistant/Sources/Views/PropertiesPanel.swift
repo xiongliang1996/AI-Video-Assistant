@@ -15,7 +15,7 @@ struct PropertiesPanel: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Theme.text)
                 Spacer()
-                Text(appState.selectedItem?.name ?? "未选择")
+                Text(headerSubtitle)
                     .font(.system(size: 10.5))
                     .foregroundStyle(Theme.text3)
                     .lineLimit(1)
@@ -43,6 +43,8 @@ struct PropertiesPanel: View {
                     .padding(.horizontal, 12)
                     .padding(.bottom, 16)
                 }
+            } else if appState.hasMultiSelection {
+                multiSelection
             } else {
                 EmptyHint(icon: "slider.horizontal.3",
                           title: "未选中片段",
@@ -51,6 +53,65 @@ struct PropertiesPanel: View {
         }
         .frame(width: 288)
         .background(Theme.panel2)
+    }
+
+    // MARK: 多选
+
+    private var headerSubtitle: String {
+        if let item = appState.selectedItem { return item.name }
+        if appState.hasMultiSelection { return "已选 \(appState.selectedItemIDs.count) 个片段" }
+        return "未选择"
+    }
+
+    private var multiSelection: some View {
+        let items = appState.selectedItems
+        let start = items.map(\.startTime).min() ?? 0
+        let end = items.map(\.endTime).max() ?? 0
+        let total = items.reduce(0) { $0 + $1.duration }
+        let videoCount = items.filter { $0.trackKind == .video }.count
+        let audioCount = items.filter { $0.trackKind == .audio }.count
+        let textCount = items.filter { $0.trackKind == .subtitle }.count
+
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                groupHeader("square.stack.3d.up", "多选")
+                infoRow("片段数", "\(items.count)")
+                infoRow("时间跨度", "\(formatTimecode(start)) – \(formatTimecode(end))")
+                infoRow("片段总长", String(format: "%.1f s", total))
+                if videoCount > 0 { infoRow("视频", "\(videoCount)") }
+                if audioCount > 0 { infoRow("音频", "\(audioCount)") }
+                if textCount > 0 { infoRow("字幕", "\(textCount)") }
+
+                divider.padding(.vertical, 10)
+
+                Button {
+                    appState.removeSelectedItem()
+                } label: {
+                    Label("删除所选 \(items.count) 个片段", systemImage: "trash")
+                        .font(.system(size: 11.5))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SoftButtonStyle(height: 30, fullWidth: true))
+
+                Button {
+                    appState.clearSelection()
+                } label: {
+                    Text("取消选择")
+                        .font(.system(size: 11.5))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SoftButtonStyle(height: 28, fullWidth: true))
+                .padding(.top, 6)
+
+                Text("拖动任意选中片段可整组移动；⌘ 点击增减选择。")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.text3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 10)
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 16)
+        }
     }
 
     private var divider: some View {

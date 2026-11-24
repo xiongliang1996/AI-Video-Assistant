@@ -235,7 +235,7 @@ struct TTSView: View {
                         }
                         .buttonStyle(.plain)
 
-                        WaveformView(active: audio.isPlaying)
+                        WaveformView(url: history.first?.url, active: audio.isPlaying)
 
                         Text(formatTimecode(history.first?.duration ?? 0))
                             .font(.system(size: 11))
@@ -454,32 +454,25 @@ struct VoiceCard: View {
 // MARK: - 波形
 
 struct WaveformView: View {
+    let url: URL?
     let active: Bool
 
-    private var heights: [CGFloat] {
-        var result: [CGFloat] = []
-        result.reserveCapacity(56)
-        for index in 0..<56 {
-            let phase: Double = Double(index) * 0.55
-            let base: Double = sin(phase) * 0.5 + 0.5
-            let noise: Double = Double((index * 37) % 100) / 100.0
-            let mixed: Double = base * 0.7 + noise * 0.3
-            let barHeight: CGFloat = CGFloat(8.0 + mixed * 26.0)
-            result.append(barHeight)
-        }
-        return result
-    }
-
     var body: some View {
-        HStack(alignment: .center, spacing: 2) {
-            ForEach(Array(heights.enumerated()), id: \.offset) { _, height in
-                Capsule()
-                    .fill(Theme.brandGradient)
-                    .frame(width: 2.5, height: height)
-                    .opacity(active ? 0.95 : 0.8)
+        Group {
+            if let url {
+                FileWaveform(url: url,
+                             buckets: 56,
+                             color: Theme.accent.opacity(active ? 1 : 0.82),
+                             minBarHeight: 6,
+                             spacing: 2)
+            } else {
+                WaveformBars(peaks: WaveformStore.placeholder(buckets: 56),
+                             color: Theme.accent.opacity(0.3),
+                             minBarHeight: 6,
+                             spacing: 2)
             }
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 44)
+        .frame(height: 40)
     }
 }

@@ -157,8 +157,11 @@ struct MediaPanel: View {
                                 .onTapGesture {
                                     appState.addToTimeline(asset)
                                 }
+                                .onDrag {
+                                    NSItemProvider(contentsOf: asset.url) ?? NSItemProvider()
+                                }
                                 .contextMenu {
-                                    Button("加入时间线") { appState.addToTimeline(asset) }
+                                    Button("加入时间线末尾") { appState.addToTimeline(asset) }
                                     Button("在访达中显示") {
                                         NSWorkspace.shared.activateFileViewerSelecting([asset.url])
                                     }

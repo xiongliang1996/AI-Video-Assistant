@@ -450,6 +450,37 @@ enum SubtitleParser {
 
 // MARK: - 通用工具
 
+/// 时间线排布计算（纯函数，便于单测）
+enum TimelineLayout {
+    /// 从期望位置开始，找一段不与已有片段重叠的起点。
+    /// 冲突时把起点推到冲突片段的末尾，继续往后找。
+    static func freeStart(existing: [TimelineItem], desired: Double, duration: Double) -> Double {
+        guard duration > 0 else { return max(0, desired) }
+        var start = max(0, desired)
+        let sorted = existing.sorted { $0.startTime < $1.startTime }
+
+        var moved = true
+        var guardCount = 0
+        while moved && guardCount < 200 {
+            moved = false
+            guardCount += 1
+            for clip in sorted {
+                let overlaps = start < clip.endTime - 0.001 && start + duration > clip.startTime + 0.001
+                if overlaps {
+                    start = clip.endTime
+                    moved = true
+                }
+            }
+        }
+        return start
+    }
+
+    /// 两个时间区间是否重叠
+    static func overlaps(_ aStart: Double, _ aEnd: Double, _ bStart: Double, _ bEnd: Double) -> Bool {
+        aStart < bEnd - 0.001 && aEnd > bStart + 0.001
+    }
+}
+
 func formatTimecode(_ seconds: Double) -> String {
     guard seconds.isFinite, seconds >= 0 else { return "00:00" }
     let m = Int(seconds) / 60

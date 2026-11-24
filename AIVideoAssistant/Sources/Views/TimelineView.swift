@@ -5,6 +5,7 @@
 
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 private enum DragMode {
     case move, trimStart, trimEnd
@@ -17,6 +18,12 @@ struct TimelineView: View {
     @State private var dragOrigin: TimelineItem?
     @State private var dragMode: DragMode = .move
     @State private var snapTime: Double?
+    @State private var dropTime: Double?
+    @State private var dropTrack: Int?
+    @State private var dragLowerDelta: Double = -.greatestFiniteMagnitude
+    @State private var dragUpperDelta: Double = .greatestFiniteMagnitude
+    @State private var dragGroupIDs: Set<UUID> = []
+    @State private var dragGroupStarts: [UUID: Double] = [:]
 
     private let basePPS: CGFloat = 26
     private let trackHeight: CGFloat = 46
@@ -57,9 +64,19 @@ struct TimelineView: View {
                         if let snapTime {
                             snapLine(at: snapTime)
                         }
+                        if let dropTime {
+                            dropIndicator(at: dropTime, track: dropTrack)
+                        }
                         playhead
                     }
                     .frame(width: canvasWidth, alignment: .topLeading)
+                    .onDrop(of: [UTType.fileURL],
+                            delegate: TimelineDropDelegate(pps: pps,
+                                                           trackHeight: trackHeight,
+                                                           rulerHeight: 22,
+                                                           dropTime: $dropTime,
+                                                           dropTrack: $dropTrack,
+                                                           onDrop: handleDrop))
                 }
             }
         }
@@ -171,7 +188,7 @@ struct TimelineView: View {
                 }
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    appState.selectedItemID = nil
+                    appState.clearSelection()
                 }
 
             ForEach(items) { item in
@@ -185,9 +202,10 @@ struct TimelineView: View {
         let width = max(28, CGFloat(item.duration) * pps)
         return ClipView(item: item,
                         width: width,
-                        selected: appState.selectedItemID == item.id,
+                        selected: appState.selectedItemIDs.contains(item.id),
                         onSelect: {
-                            appState.selectedItemID = item.id
+                            appState.select(item.id,
+                                            additive: NSEvent.modifierFlags.contains(.command))
                         },
                         onMove: { translation, ended in
                             handleDrag(item, mode: .move, translation: translation, ended: ended)
@@ -199,7 +217,7 @@ struct TimelineView: View {
                             handleDrag(item, mode: .trimEnd, translation: translation, ended: ended)
                         })
             .offset(x: CGFloat(item.startTime) * pps)
-            .zIndex(appState.selectedItemID == item.id ? 2 : 1)
+            .zIndex(appState.selectedItemIDs.contains(item.id) ? 2 : 1)
     }
     private var playhead: some View {
         VStack(spacing: 0) {
@@ -225,6 +243,47 @@ struct TimelineView: View {
             .allowsHitTesting(false)
     }
 
+    // MARK: - 拖入素材
+
+    private func dropIndicator(at seconds: Double, track: Int?) -> some View {
+        HStack(spacing: 0) {
+            Rectangle()
+                .fill(Theme.accent)
+                .frame(width: 2)
+            Spacer(minLength: 0)
+        }
+        .frame(maxHeight: .infinity)
+        .background(alignment: .top) {
+            VStack(spacing: 0) {
+                Color.clear.frame(height: 22)
+                ForEach(0..<4, id: \.self) { index in
+                    Rectangle()
+                        .fill(index == track ? Theme.accent.opacity(0.16) : Color.clear)
+                        .frame(height: trackHeight)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .offset(x: CGFloat(seconds) * pps)
+        .allowsHitTesting(false)
+    }
+
+    private func handleDrop(urls: [URL], time: Double, trackIndex: Int) {
+        guard !urls.isEmpty else { return }
+        // 落在 A1 / A2 上时按用户意图指定音频层
+        let laneHint: Int?
+        switch trackIndex {
+        case 1: laneHint = 0
+        case 2: laneHint = 1
+        default: laneHint = nil
+        }
+        Task {
+            for url in urls {
+                await appState.insertMedia(url: url, at: time, audioLaneHint: laneHint)
+            }
+        }
+    }
+
     // MARK: - 播放头拖动
 
     private var scrubGesture: some Gesture {
@@ -245,25 +304,30 @@ struct TimelineView: View {
             dragOrigin = nil
             dragMode = .move
             snapTime = nil
+            dragGroupIDs = []
+            dragGroupStarts = [:]
             return
         }
 
         if dragOrigin?.id != item.id || dragMode != mode {
             dragOrigin = item
             dragMode = mode
+            prepareDragBounds(for: item, mode: mode)
             // 一次拖拽只记一个撤销点
             appState.beginEdit()
         }
         guard let origin = dragOrigin else { return }
 
-        appState.selectedItemID = item.id
+        if !appState.selectedItemIDs.contains(item.id) {
+            appState.select(item.id, additive: false)
+        }
 
         let delta = Double(translation.width / pps)
 
-        // 垂直拖动切换轨道层（音频 A1/A2）
+        // 垂直拖动切换轨道层（音频 A1/A2），多选时不换层
         var working = origin
         let laneCount = TimelineItem.laneCount(for: origin.trackKind)
-        if mode == .move, laneCount > 1 {
+        if mode == .move, laneCount > 1, dragGroupIDs.count <= 1 {
             let laneDelta = Int((translation.height / trackHeight).rounded())
             let target = min(max(0, origin.trackLane + laneDelta), laneCount - 1)
             if target != origin.trackLane,
@@ -276,18 +340,13 @@ struct TimelineView: View {
         }
 
         let neighbors = appState.neighbors(of: working)
-        let points = snapCandidates(excluding: origin)
+        let points = snapCandidates(excludingIDs: dragGroupIDs.isEmpty ? [origin.id] : dragGroupIDs)
         let threshold = Double(8 / pps)
         var updated = working
         var snapped: Double?
 
         switch mode {
         case .move:
-            let lower = max(0, neighbors.prevEnd)
-            let upper: Double = neighbors.nextStart.isFinite
-                ? max(lower, neighbors.nextStart - working.duration)
-                : .greatestFiniteMagnitude
-
             var start = working.startTime + delta
 
             if let s = nearest(start, in: points, threshold: threshold) {
@@ -298,14 +357,26 @@ struct TimelineView: View {
                 snapped = s
             }
 
-            start = min(max(start, lower), upper)
-            if let s = snapped,
-               abs(start - s) > 0.02,
-               abs(start + working.duration - s) > 0.02 {
+            var appliedDelta = start - origin.startTime
+            appliedDelta = min(max(appliedDelta, dragLowerDelta), dragUpperDelta)
+            if let s = snapped, abs(appliedDelta - (s - origin.startTime)) > 0.02 {
                 snapped = nil
             }
 
-            updated.startTime = start
+            snapTime = snapped
+
+            if dragGroupIDs.count > 1 {
+                // 整组按同一偏移移动（起点取自拖拽开始时的快照，避免累加漂移）
+                for (id, originalStart) in dragGroupStarts {
+                    guard var copy = appState.timeline.first(where: { $0.id == id }) else { continue }
+                    copy.startTime = max(0, originalStart + appliedDelta)
+                    appState.updateItem(copy)
+                }
+                return
+            }
+
+            updated.startTime = max(0, origin.startTime + appliedDelta)
+            appState.updateItem(updated)
 
         case .trimStart:
             let minStart = max(neighbors.prevEnd, working.startTime - working.sourceStart)
@@ -322,6 +393,9 @@ struct TimelineView: View {
             updated.duration = max(minClipDuration, working.duration - shift)
             updated.sourceStart = max(0, working.sourceStart + shift)
 
+            snapTime = snapped
+            appState.updateItem(updated)
+
         case .trimEnd:
             let maxEnd = min(neighbors.nextStart, working.endTime + maxExtraTail(working))
             let minEnd = working.startTime + minClipDuration
@@ -333,10 +407,53 @@ struct TimelineView: View {
             }
 
             updated.duration = max(minClipDuration, end - working.startTime)
+
+            snapTime = snapped
+            appState.updateItem(updated)
+        }
+    }
+
+    /// 拖拽开始时算好整组可移动的偏移范围，避免多选时互相挤压
+    private func prepareDragBounds(for item: TimelineItem, mode: DragMode) {
+        let inSelection = appState.selectedItemIDs.contains(item.id)
+        dragGroupIDs = (mode == .move && inSelection) ? appState.selectedItemIDs : [item.id]
+
+        guard mode == .move else {
+            dragLowerDelta = -.greatestFiniteMagnitude
+            dragUpperDelta = .greatestFiniteMagnitude
+            return
         }
 
-        snapTime = snapped
-        appState.updateItem(updated)
+        let snapshot = appState.timeline
+        dragGroupStarts = Dictionary(uniqueKeysWithValues:
+            snapshot.filter { dragGroupIDs.contains($0.id) }.map { ($0.id, $0.startTime) })
+        var lower = -Double.greatestFiniteMagnitude
+        var upper = Double.greatestFiniteMagnitude
+
+        for member in snapshot where dragGroupIDs.contains(member.id) {
+            let siblings = snapshot.filter {
+                $0.id != member.id
+                    && !dragGroupIDs.contains($0.id)
+                    && $0.trackKind == member.trackKind
+                    && $0.trackLane == member.trackLane
+            }
+            let prevEnd = siblings.filter { $0.endTime <= member.startTime + 0.001 }
+                .map(\.endTime)
+                .max() ?? 0
+            let nextStart = siblings.filter { $0.startTime >= member.startTime - 0.001 }
+                .map(\.startTime)
+                .min() ?? .greatestFiniteMagnitude
+
+            lower = max(lower, prevEnd - member.startTime)
+            lower = max(lower, -member.startTime)
+            if nextStart.isFinite {
+                upper = min(upper, nextStart - member.duration - member.startTime)
+            }
+        }
+
+        if lower > upper { upper = lower }
+        dragLowerDelta = lower
+        dragUpperDelta = upper
     }
 
     private func nearest(_ value: Double, in points: [Double], threshold: Double) -> Double? {
@@ -352,9 +469,9 @@ struct TimelineView: View {
         return best
     }
 
-    private func snapCandidates(excluding item: TimelineItem) -> [Double] {
+    private func snapCandidates(excludingIDs ids: Set<UUID>) -> [Double] {
         var points: [Double] = [0, appState.currentTime, appState.totalDuration]
-        for other in appState.timeline where other.id != item.id {
+        for other in appState.timeline where !ids.contains(other.id) {
             points.append(other.startTime)
             points.append(other.endTime)
         }
@@ -396,6 +513,70 @@ struct TimelineView: View {
         appState.timeline.append(right)
         appState.selectedItemID = right.id
         appState.notify("已切割片段")
+    }
+}
+
+// MARK: - 拖入素材的落点代理
+
+private struct TimelineDropDelegate: DropDelegate {
+    let pps: CGFloat
+    let trackHeight: CGFloat
+    let rulerHeight: CGFloat
+    @Binding var dropTime: Double?
+    @Binding var dropTrack: Int?
+    let onDrop: ([URL], Double, Int) -> Void
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [UTType.fileURL])
+    }
+
+    func dropEntered(info: DropInfo) {
+        update(info)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        update(info)
+        return DropProposal(operation: .copy)
+    }
+
+    func dropExited(info: DropInfo) {
+        dropTime = nil
+        dropTrack = nil
+    }
+
+    private func update(_ info: DropInfo) {
+        dropTime = max(0, Double(info.location.x / max(1, pps)))
+        let y = info.location.y - rulerHeight
+        let index = Int(y / max(1, trackHeight))
+        dropTrack = min(max(0, index), 3)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        update(info)
+        let time = dropTime ?? 0
+        let track = dropTrack ?? 0
+        dropTime = nil
+        dropTrack = nil
+
+        let providers = info.itemProviders(for: [UTType.fileURL])
+        guard !providers.isEmpty else { return false }
+
+        for provider in providers {
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                guard let url = Self.resolve(item) else { return }
+                DispatchQueue.main.async {
+                    onDrop([url], time, track)
+                }
+            }
+        }
+        return true
+    }
+
+    private static func resolve(_ item: NSSecureCoding?) -> URL? {
+        if let url = item as? URL { return url }
+        if let data = item as? Data { return URL(dataRepresentation: data, relativeTo: nil) }
+        if let string = item as? String, let url = URL(string: string) { return url }
+        return nil
     }
 }
 
@@ -448,6 +629,13 @@ struct ClipView: View {
 
     @State private var hovering = false
 
+    /// 波形桶数随宽度变化，按 8 的倍数取整，减少缓存碎片
+    private var waveBuckets: Int {
+        let raw = Int(width / 4)
+        let rounded = max(16, min(96, (raw / 8) * 8))
+        return rounded
+    }
+
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: item.type.icon)
@@ -458,9 +646,25 @@ struct ClipView: View {
             Spacer(minLength: 0)
         }
         .foregroundStyle(.white)
+        // 波形是浅色，文字压上去容易糊，补一层暗影保证可读
+        .shadow(color: .black.opacity(0.45), radius: 2, y: 0.5)
         .padding(.horizontal, 6)
         .frame(width: width, height: 36, alignment: .leading)
-        .background(Theme.clipGradient(for: item.type))
+        .background(
+            Theme.clipGradient(for: item.type)
+                .overlay {
+                    if item.type == .audio, let url = item.assetURL {
+                        FileWaveform(url: url,
+                                     buckets: waveBuckets,
+                                     color: Color.white.opacity(0.42),
+                                     minBarHeight: 1,
+                                     spacing: 1)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 8)
+                            .allowsHitTesting(false)
+                    }
+                }
+        )
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         .overlay(alignment: .topLeading) {
             if item.transition != .none {

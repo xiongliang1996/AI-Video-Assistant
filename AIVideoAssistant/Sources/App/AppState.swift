@@ -49,7 +49,46 @@ final class AppState: ObservableObject {
     // 素材与时间线
     @Published var mediaLibrary: [MediaAsset] = []
     @Published var timeline: [TimelineItem] = []
-    @Published var selectedItemID: UUID?
+    @Published var selectedItemIDs: Set<UUID> = []
+
+    /// 单选时的主选中项；多选时为 nil（属性面板改为显示批量操作）
+    var selectedItemID: UUID? {
+        get { selectedItemIDs.count == 1 ? selectedItemIDs.first : nil }
+        set {
+            if let newValue {
+                selectedItemIDs = [newValue]
+            } else {
+                selectedItemIDs = []
+            }
+        }
+    }
+
+    var selectedItems: [TimelineItem] {
+        timeline.filter { selectedItemIDs.contains($0.id) }
+    }
+
+    var hasMultiSelection: Bool { selectedItemIDs.count > 1 }
+
+    /// 点选片段：additive 时切换选中状态（⌘ 点击）
+    func select(_ id: UUID, additive: Bool) {
+        if additive {
+            if selectedItemIDs.contains(id) {
+                selectedItemIDs.remove(id)
+            } else {
+                selectedItemIDs.insert(id)
+            }
+        } else {
+            selectedItemIDs = [id]
+        }
+    }
+
+    func clearSelection() {
+        selectedItemIDs = []
+    }
+
+    func selectAll() {
+        selectedItemIDs = Set(timeline.map(\.id))
+    }
 
     // 播放
     @Published var currentTime: Double = 0
@@ -76,7 +115,7 @@ final class AppState: ObservableObject {
 
     struct EditSnapshot: Equatable {
         var timeline: [TimelineItem]
-        var selectedItemID: UUID?
+        var selectedItemIDs: Set<UUID>
     }
 
     private var toastWorkItem: DispatchWorkItem?
@@ -405,6 +444,60 @@ final class AppState: ObservableObject {
 
     // MARK: - 时间线
 
+    /// 在指定位置插入素材（拖拽落点）。同轨同层已有片段时自动顺延到空隙
+    @discardableResult
+    func insertMedia(url: URL, at desiredStart: Double, audioLaneHint: Int? = nil) async -> Bool {
+        let asset: MediaAsset
+        if let existing = mediaLibrary.first(where: { $0.url == url }) {
+            asset = existing
+        } else {
+            let created = MediaAsset(url: url)
+            mediaLibrary.append(created)
+            asset = created
+        }
+        if asset.duration <= 0 {
+            await asset.loadMetadata()
+        }
+
+        let kind: TimelineItemType = asset.type == .audio ? .audio : .video
+        let duration = asset.duration > 0 ? asset.duration : 5
+        let trackKind = kind == .audio ? TimelineTrack.audio : .video
+
+        var lane = 0
+        if kind == .audio {
+            let preferred = min(max(0, audioLaneHint ?? 0), TimelineItem.laneCount(for: .audio) - 1)
+            lane = preferred
+            if !laneIsFree(.audio, lane: lane, start: desiredStart, end: desiredStart + duration) {
+                let other = preferred == 0 ? 1 : 0
+                if laneIsFree(.audio, lane: other, start: desiredStart, end: desiredStart + duration) {
+                    lane = other
+                }
+            }
+        }
+
+        let start = freeStart(kind: trackKind, lane: lane, desired: desiredStart, duration: duration)
+
+        beginEdit()
+        var item = TimelineItem(type: kind,
+                                name: asset.name,
+                                startTime: start,
+                                duration: duration,
+                                assetURL: asset.url)
+        item.assetID = asset.id
+        item.trackLane = lane
+        timeline.append(item)
+        selectedItemID = item.id
+        notify("「\(asset.name)」已插入 \(formatTimecode(start))")
+        return true
+    }
+
+    /// 从期望位置开始找一段不与同轨同层片段重叠的起点
+    func freeStart(kind: TimelineTrack, lane: Int, desired: Double, duration: Double) -> Double {
+        TimelineLayout.freeStart(existing: clips(on: kind, lane: lane),
+                                 desired: desired,
+                                 duration: duration)
+    }
+
     func addToTimeline(_ asset: MediaAsset) {
         beginEdit()
         let start = totalDuration
@@ -446,11 +539,12 @@ final class AppState: ObservableObject {
     }
 
     func removeSelectedItem() {
-        guard let id = selectedItemID else { return }
+        guard !selectedItemIDs.isEmpty else { return }
+        let count = selectedItemIDs.count
         beginEdit()
-        timeline.removeAll { $0.id == id }
-        selectedItemID = nil
-        notify("已删除片段")
+        timeline.removeAll { selectedItemIDs.contains($0.id) }
+        selectedItemIDs = []
+        notify(count > 1 ? "已删除 \(count) 个片段" : "已删除片段")
     }
 
     /// recordUndo=true 时把这次修改纳入撤销栈（滑杆连续拖动会在 1 秒内合并）
@@ -490,7 +584,7 @@ final class AppState: ObservableObject {
         }
         lastUndoStamp = now
 
-        let snapshot = EditSnapshot(timeline: timeline, selectedItemID: selectedItemID)
+        let snapshot = EditSnapshot(timeline: timeline, selectedItemIDs: selectedItemIDs)
         if undoStack.last != snapshot {
             undoStack.append(snapshot)
             if undoStack.count > 120 { undoStack.removeFirst() }
@@ -501,7 +595,7 @@ final class AppState: ObservableObject {
 
     func undo() {
         guard let previous = undoStack.popLast() else { return }
-        redoStack.append(EditSnapshot(timeline: timeline, selectedItemID: selectedItemID))
+        redoStack.append(EditSnapshot(timeline: timeline, selectedItemIDs: selectedItemIDs))
         applySnapshot(previous)
         lastUndoStamp = .distantPast
         refreshUndoFlags()
@@ -510,7 +604,7 @@ final class AppState: ObservableObject {
 
     func redo() {
         guard let next = redoStack.popLast() else { return }
-        undoStack.append(EditSnapshot(timeline: timeline, selectedItemID: selectedItemID))
+        undoStack.append(EditSnapshot(timeline: timeline, selectedItemIDs: selectedItemIDs))
         applySnapshot(next)
         lastUndoStamp = .distantPast
         refreshUndoFlags()
@@ -519,10 +613,8 @@ final class AppState: ObservableObject {
 
     private func applySnapshot(_ snapshot: EditSnapshot) {
         timeline = snapshot.timeline
-        selectedItemID = snapshot.selectedItemID
-        if let id = snapshot.selectedItemID, !timeline.contains(where: { $0.id == id }) {
-            selectedItemID = nil
-        }
+        let alive = Set(timeline.map(\.id))
+        selectedItemIDs = snapshot.selectedItemIDs.intersection(alive)
     }
 
     private func refreshUndoFlags() {
