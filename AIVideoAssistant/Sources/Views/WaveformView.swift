@@ -31,23 +31,28 @@ struct WaveformBars: View {
 }
 
 /// 从音频文件读真实波形；解码期间显示低透明度占位
+/// - sourceStart / duration 传片段自己的入点与时长，裁剪后波形会跟着滑动
 struct FileWaveform: View {
     let url: URL
     var buckets: Int = 64
     var color: Color = Theme.accent
     var minBarHeight: CGFloat = 2
     var spacing: CGFloat = 1.5
+    var sourceStart: Double = 0
+    var duration: Double? = nil
 
     @ObservedObject private var store = WaveformStore.shared
 
     var body: some View {
-        let real = store.cachedPeaks(for: url, buckets: buckets)
-        let peaks = real ?? WaveformStore.placeholder(buckets: buckets)
+        let data = store.cached(for: url)
+        let peaks = data.map {
+            WaveformStore.slice($0, sourceStart: sourceStart, duration: duration, buckets: buckets)
+        } ?? WaveformStore.placeholder(buckets: buckets)
         WaveformBars(peaks: peaks,
                      color: color,
                      minBarHeight: minBarHeight,
                      spacing: spacing)
-            .opacity(real == nil ? 0.45 : 1)
-            .onAppear { store.load(url: url, buckets: buckets) }
+            .opacity(data == nil ? 0.45 : 1)
+            .onAppear { store.load(url: url) }
     }
 }

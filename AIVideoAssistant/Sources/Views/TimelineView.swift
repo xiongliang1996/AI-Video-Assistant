@@ -658,7 +658,9 @@ struct ClipView: View {
                                      buckets: waveBuckets,
                                      color: Color.white.opacity(0.42),
                                      minBarHeight: 1,
-                                     spacing: 1)
+                                     spacing: 1,
+                                     sourceStart: item.sourceStart,
+                                     duration: item.duration * max(0.1, item.properties.speed))
                             .padding(.horizontal, 4)
                             .padding(.vertical, 8)
                             .allowsHitTesting(false)
