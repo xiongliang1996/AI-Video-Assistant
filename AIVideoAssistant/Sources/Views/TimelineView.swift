@@ -644,8 +644,11 @@ struct ClipView: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            Image(systemName: item.type.icon)
-                .font(.system(size: 9, weight: .medium))
+            // 片段很窄时把图标让出来给文字，否则只剩一个省略号
+            if width >= 64 {
+                Image(systemName: item.type.icon)
+                    .font(.system(size: 9, weight: .medium))
+            }
             Text(item.name)
                 .font(.system(size: 10, weight: .medium))
                 .lineLimit(1)
@@ -670,6 +673,21 @@ struct ClipView: View {
                             .padding(.horizontal, 4)
                             .padding(.vertical, 8)
                             .allowsHitTesting(false)
+                    } else if item.type == .video || item.type == .aiGenerated,
+                              let url = item.assetURL {
+                        ClipThumbnailStrip(url: url,
+                                           sourceStart: item.sourceStart,
+                                           duration: item.duration,
+                                           speed: item.properties.speed,
+                                           tileWidth: 52)
+                            .allowsHitTesting(false)
+                            .overlay {
+                                // 压一层暗色，保证白色片段名在亮画面上也看得清
+                                LinearGradient(colors: [Color.black.opacity(0.42),
+                                                        Color.black.opacity(0.12)],
+                                               startPoint: .leading,
+                                               endPoint: .trailing)
+                            }
                     }
                 }
         )
