@@ -185,8 +185,8 @@ enum CompositionBuilder {
                     try dest.insertTimeRange(range, of: sourceAudio, at: start)
                     let insertedRange = CMTimeRange(start: start, duration: range.duration)
                     if abs(playDuration - take) > 0.01 {
-                        try dest.scaleTimeRange(insertedRange,
-                                                toDuration: CMTime(seconds: playDuration, preferredTimescale: 600))
+                        dest.scaleTimeRange(insertedRange,
+                                            toDuration: CMTime(seconds: playDuration, preferredTimescale: 600))
                     }
                     applyVolume(params(for: dest),
                                 volume: plan.item.properties.volume,
