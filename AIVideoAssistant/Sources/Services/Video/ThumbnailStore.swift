@@ -65,7 +65,8 @@ final class ThumbnailStore: ObservableObject {
         let asset = AVURLAsset(url: url)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: 96, height: 54)
+        // 放大时间线时一张缩略图会占到 120pt 以上，取帧尺寸留够余量
+        generator.maximumSize = CGSize(width: 160, height: 90)
         // 容差放小：宽容差会取到最近关键帧，画面变化处（切镜、转场）容易错位
         generator.requestedTimeToleranceBefore = CMTime(seconds: 0.05, preferredTimescale: 600)
         generator.requestedTimeToleranceAfter = CMTime(seconds: 0.05, preferredTimescale: 600)

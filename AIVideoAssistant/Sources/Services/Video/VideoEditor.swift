@@ -12,6 +12,7 @@ enum VideoError: LocalizedError {
     case emptyTimeline
     case compositionFailed
     case exportFailed(String)
+    case cancelled
 
     var errorDescription: String? {
         switch self {
@@ -20,6 +21,7 @@ enum VideoError: LocalizedError {
         case .emptyTimeline: return "时间线为空，请先添加素材"
         case .compositionFailed: return "视频合成失败"
         case .exportFailed(let msg): return "导出失败：\(msg)"
+        case .cancelled: return "导出已取消"
         }
     }
 }

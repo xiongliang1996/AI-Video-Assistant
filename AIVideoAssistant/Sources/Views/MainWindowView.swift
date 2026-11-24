@@ -25,6 +25,9 @@ struct MainWindowView: View {
             SmartCutView()
                 .environmentObject(appState)
         }
+        .sheet(isPresented: $appState.showingExportQueue) {
+            ExportQueueView()
+        }
         .overlay(alignment: .bottom) { toastLayer }
         .overlay { processingLayer }
         .alert("提示", isPresented: errorBinding) {

@@ -6,6 +6,23 @@
 import SwiftUI
 import AVFoundation
 
+/// 缩略图取帧计划（纯函数，便于测试）
+enum ThumbnailPlan {
+    /// 一张缩略图大致覆盖的源秒数，用来对齐「一格 1.6 秒」的阅读节奏
+    static let secondsPerTile: Double = 1.6
+
+    static func times(sourceStart: Double,
+                      duration: Double,
+                      speed: Double,
+                      width: CGFloat,
+                      tileWidth: CGFloat) -> [Double] {
+        guard width > 0 else { return [sourceStart] }
+        let count = max(1, Int((width / max(1, tileWidth)).rounded(.up)))
+        let step = duration * max(0.1, speed) / Double(count)
+        return (0..<count).map { sourceStart + Double($0) * step }
+    }
+}
+
 struct ClipThumbnailStrip: View {
     let url: URL
     /// 片段在源文件里的入点（秒）
@@ -20,9 +37,11 @@ struct ClipThumbnailStrip: View {
     @ObservedObject private var store: ThumbnailStore = .shared
 
     private func times(for width: CGFloat) -> [Double] {
-        let count = max(1, Int((width / tileWidth).rounded(.up)))
-        let step = duration * max(0.1, speed) / Double(count)
-        return (0..<count).map { sourceStart + Double($0) * step }
+        ThumbnailPlan.times(sourceStart: sourceStart,
+                            duration: duration,
+                            speed: speed,
+                            width: width,
+                            tileWidth: tileWidth)
     }
 
     var body: some View {

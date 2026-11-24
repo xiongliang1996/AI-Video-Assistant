@@ -42,6 +42,9 @@ struct AIVideoAssistantApp: App {
 
                 Button("导出视频…") { appState.exportVideo() }
                     .keyboardShortcut("e", modifiers: .command)
+
+                Button("导出队列…") { appState.showingExportQueue = true }
+                    .keyboardShortcut("e", modifiers: [.command, .shift])
             }
             CommandGroup(replacing: .undoRedo) {
                 Button("撤销") { appState.undo() }

@@ -12,6 +12,13 @@ import Foundation
 import AVFoundation
 import CoreGraphics
 
+/// 取消回调是 @Sendable 的，AVAssetExportSession 本身没标 Sendable，
+/// 用一层盒子明确告诉编译器「这里只在主线程之外读一次引用」
+private final class ExportSessionBox: @unchecked Sendable {
+    let session: AVAssetExportSession
+    init(_ session: AVAssetExportSession) { self.session = session }
+}
+
 final class VideoExporter {
     static let shared = VideoExporter()
 
@@ -80,13 +87,25 @@ final class VideoExporter {
         timer.schedule(deadline: .now() + 0.2, repeating: 0.25)
         timer.setEventHandler {
             let p = Double(session.progress)
-            progress(0.25 + p * 0.7, "正在编码 \(Int(p * 100))%")
+            let overall = 0.25 + p * 0.7
+            progress(overall, "正在编码 \(Int(overall * 100))%")
         }
         timer.resume()
 
-        await session.export()
+        // 取消时立刻让 AVAssetExportSession 停下，别等它跑完整条时间线
+        let box = ExportSessionBox(session)
+        await withTaskCancellationHandler {
+            await session.export()
+        } onCancel: {
+            box.session.cancelExport()
+        }
 
         timer.cancel()
+
+        if session.status == .cancelled || Task.isCancelled {
+            try? FileManager.default.removeItem(at: outputURL)
+            throw VideoError.cancelled
+        }
 
         if session.status != .completed {
             throw VideoError.exportFailed(session.error?.localizedDescription ?? "未知错误")
@@ -206,9 +225,59 @@ final class VideoExporter {
 
         let totalSeconds = totalDuration
 
-        await withThrowingTaskGroup(of: Void.self) { group in
+        do {
+            try await pumpSamples(writer: writer,
+                                  videoOutput: videoOutput,
+                                  videoInput: videoInput,
+                                  audioOutput: audioOutput,
+                                  audioInput: audioInput,
+                                  overlay: overlay,
+                                  totalSeconds: totalSeconds,
+                                  progress: progress)
+        } catch {
+            // 取消或出错都要把写了一半的文件清掉，避免留下坏片
+            writer.cancelWriting()
+            reader.cancelReading()
+            try? FileManager.default.removeItem(at: outputURL)
+            if Task.isCancelled { throw VideoError.cancelled }
+            throw error
+        }
+
+        if Task.isCancelled {
+            writer.cancelWriting()
+            reader.cancelReading()
+            try? FileManager.default.removeItem(at: outputURL)
+            throw VideoError.cancelled
+        }
+
+        if reader.status == .failed {
+            writer.cancelWriting()
+            throw VideoError.exportFailed(reader.error?.localizedDescription ?? "读取失败")
+        }
+
+        await writer.finishWriting()
+
+        if writer.status != .completed {
+            throw VideoError.exportFailed(writer.error?.localizedDescription ?? "编码未完成")
+        }
+    }
+
+    // MARK: 逐帧搬运（可取消）
+
+    private func pumpSamples(writer: AVAssetWriter,
+                             videoOutput: AVAssetReaderVideoCompositionOutput,
+                             videoInput: AVAssetWriterInput,
+                             audioOutput: AVAssetReaderAudioMixOutput?,
+                             audioInput: AVAssetWriterInput?,
+                             overlay: SubtitleFrameRenderer,
+                             totalSeconds: Double,
+                             progress: @escaping (Double, String) -> Void) async throws {
+
+        try await withThrowingTaskGroup(of: Void.self) { (group: inout ThrowingTaskGroup<Void, Error>) in
+            try Task.checkCancellation()
             group.addTask {
                 while let sample = videoOutput.copyNextSampleBuffer() {
+                    try Task.checkCancellation()
                     while !videoInput.isReadyForMoreMediaData {
                         if writer.status != .writing {
                             throw VideoError.exportFailed(writer.error?.localizedDescription ?? "写入中断")
@@ -226,8 +295,9 @@ final class VideoExporter {
                     }
                     let done = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))
                     let ratio = totalSeconds > 0 ? min(1, max(0, done / totalSeconds)) : 0
+                    let overall = 0.2 + ratio * 0.7
                     await MainActor.run {
-                        progress(0.2 + ratio * 0.7, "正在渲染 \(Int(ratio * 100))%")
+                        progress(overall, "正在渲染 \(Int(overall * 100))%")
                     }
                 }
                 videoInput.markAsFinished()
@@ -236,6 +306,7 @@ final class VideoExporter {
             if let audioOutput, let audioInput {
                 group.addTask {
                     while let sample = audioOutput.copyNextSampleBuffer() {
+                        try Task.checkCancellation()
                         while !audioInput.isReadyForMoreMediaData {
                             if writer.status != .writing {
                                 throw VideoError.exportFailed(writer.error?.localizedDescription ?? "写入中断")
@@ -249,17 +320,6 @@ final class VideoExporter {
                     audioInput.markAsFinished()
                 }
             }
-        }
-
-        if reader.status == .failed {
-            writer.cancelWriting()
-            throw VideoError.exportFailed(reader.error?.localizedDescription ?? "读取失败")
-        }
-
-        await writer.finishWriting()
-
-        if writer.status != .completed {
-            throw VideoError.exportFailed(writer.error?.localizedDescription ?? "编码未完成")
         }
     }
 

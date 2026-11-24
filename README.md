@@ -30,6 +30,7 @@
 - **项目持久化**：自动保存到 `~/Library/Application Support/AIVideoAssistant`，支持导出 `.aiva` 文件
 - **字幕烧录**：字幕 / 文字真正画进画面（字号、颜色、底衬、距底位置、粗体），预览与成片同款样式
 - AVFoundation 编码导出（H.264，720p–4K）；无字幕走硬件编码，有字幕走逐帧绘制
+- **导出队列**：`⌘E` 入队、串行执行，排队期间可以继续剪；`⌘⇧E` 看进度、取消（取消会清掉写了一半的文件）、在访达里定位成品
 
 ### 体验
 - 全原生 SwiftUI 界面，深浅色自适应
@@ -93,7 +94,8 @@ open dist/AI视频助手.app
 | `⌘ S` | 保存项目 |
 | `⌘ ⇧ S` | 导出项目副本 |
 | `⌘ I` | 导入素材 |
-| `⌘ E` | 导出视频 |
+| `⌘ E` | 导出视频（加入队列） |
+| `⌘ ⇧ E` | 导出队列 |
 | `⌘ Z` / `⇧ ⌘ Z` | 撤销 / 重做 |
 | `⌘ A` / `⇧ ⌘ A` | 全选片段 / 取消选择 |
 | `⌘ ⌫` | 删除所选片段 |
@@ -122,7 +124,7 @@ open dist/AI视频助手.app
         │   ├── AI/                 # OpenAI / TTS / 配置管理
         │   ├── Audio/              # 波形分析 + 停顿检测（RMS → dBFS）
         │   ├── ProjectStore.swift  # 项目读写
-        │   └── Video/              # CompositionBuilder / SubtitleRenderer / VideoExporter / ThumbnailStore
+        │   └── Video/              # CompositionBuilder / SubtitleRenderer / VideoExporter / ThumbnailStore / ExportQueue
         └── Views/                  # 设计系统 + 五个界面（含 WaveformView / SmartCutView / ClipThumbnailStrip）
 ```
 
@@ -165,6 +167,7 @@ open dist/AI视频助手.app
 - [x] 多选与批量操作（整组拖动 / 批量删除 / 选中统计）
 - [x] 智能剪辑（按语音停顿切片 / 波纹去停顿）
 - [x] 时间线视频缩略图（异步取帧 + 时间点缓存）
+- [x] 导出队列（串行执行 / 可取消 / 失败不留残片）
 - [ ] Sora 视频生成接入（等待 API 开放）
 
 ---

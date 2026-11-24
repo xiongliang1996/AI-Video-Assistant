@@ -32,6 +32,10 @@ struct TimelineView: View {
 
     private var pps: CGFloat { basePPS * zoom }
 
+    /// 一张缩略图覆盖 1.6 秒素材：放大时间线时缩略图跟着变宽、变少，
+    /// 缩小时自动变密，始终保持「一格约 1.6 秒」的阅读节奏
+    private var thumbTileWidth: CGFloat { max(28, pps * 1.6) }
+
     private var canvasWidth: CGFloat {
         let seconds = max(appState.totalDuration, 30) + 20
         return max(900, CGFloat(seconds) * pps)
@@ -209,6 +213,7 @@ struct TimelineView: View {
         return ClipView(item: item,
                         width: width,
                         selected: appState.selectedItemIDs.contains(item.id),
+                        tileWidth: thumbTileWidth,
                         onSelect: {
                             appState.select(item.id,
                                             additive: NSEvent.modifierFlags.contains(.command))
@@ -627,6 +632,8 @@ struct ClipView: View {
     let item: TimelineItem
     let width: CGFloat
     let selected: Bool
+    /// 一张缩略图的目标宽度（跟随时间线缩放）
+    var tileWidth: CGFloat = 52
 
     var onSelect: () -> Void
     var onMove: (CGSize, Bool) -> Void
@@ -679,7 +686,7 @@ struct ClipView: View {
                                            sourceStart: item.sourceStart,
                                            duration: item.duration,
                                            speed: item.properties.speed,
-                                           tileWidth: 52)
+                                           tileWidth: tileWidth)
                             .allowsHitTesting(false)
                             .overlay {
                                 // 压一层暗色，保证白色片段名在亮画面上也看得清

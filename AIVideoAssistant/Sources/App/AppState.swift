@@ -46,6 +46,7 @@ final class AppState: ObservableObject {
     @Published var selectedPanel: Panel = .editor
     @Published var showingSettings = false
     @Published var showingSmartCut = false
+    @Published var showingExportQueue = false
 
     // 素材与时间线
     @Published var mediaLibrary: [MediaAsset] = []
@@ -150,6 +151,7 @@ final class AppState: ObservableObject {
         }
 
         loadMediaMetadata()
+        setupExportQueue()
         setupAutosave()
         setupPreviewPipeline()
 
@@ -885,22 +887,52 @@ final class AppState: ObservableObject {
         panel.nameFieldStringValue = "\(currentProject.name).mp4"
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
+        enqueueExport(to: url)
+    }
+
+    /// 加入导出队列（串行执行，可在导出队列面板里取消）
+    func enqueueExport(to url: URL) {
+        guard !timeline.isEmpty else {
+            showError("时间线是空的，先放点素材进来")
+            return
+        }
+        // 队列是 @MainActor 的，这里把快照递过去
         let items = timeline
         let settings = currentProject.settings
+        let title = currentProject.name
+        Task { @MainActor in
+            ExportQueue.shared.enqueue(title: title, items: items, settings: settings, to: url)
+            let pending = ExportQueue.shared.pendingCount
+            self.notify(pending > 1 ? "已加入导出队列（前面还有 \(pending - 1) 个）" : "已开始导出")
+        }
+    }
 
-        processing = ProcessingState(title: "正在导出视频…", message: "准备中", progress: 0.02)
-
-        Task {
-            do {
-                try await VideoExporter.shared.export(items: items, settings: settings, to: url) { p, msg in
-                    self.processing = ProcessingState(title: "正在导出视频…", message: msg, progress: p)
-                }
+    /// 把导出队列的状态接到顶部进度浮层上
+    private func setupExportQueue() {
+        Task { @MainActor in
+        ExportQueue.shared.onActiveJobChange = { [weak self] job in
+            guard let self else { return }
+            if let job {
+                self.processing = ProcessingState(title: "正在导出 \(job.title)",
+                                                  message: job.message,
+                                                  progress: max(0.02, job.progress))
+            } else if self.processing?.title.hasPrefix("正在导出") == true {
                 self.processing = nil
-                self.notify("导出完成：\(url.lastPathComponent)")
-            } catch {
-                self.processing = nil
-                self.showError(error.localizedDescription)
             }
+        }
+        ExportQueue.shared.onJobFinish = { [weak self] job in
+            guard let self else { return }
+            switch job.state {
+            case .done:
+                self.notify("导出完成：\(job.outputURL.lastPathComponent)")
+            case .failed(let message):
+                self.showError(message)
+            case .cancelled:
+                self.notify("已取消导出")
+            default:
+                break
+            }
+        }
         }
     }
 
