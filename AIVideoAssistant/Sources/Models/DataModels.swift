@@ -243,6 +243,41 @@ struct ItemProperties: Codable, Hashable {
     var fadeOut: Double = 0.5
     var textContent: String = ""
     var fontSize: Int = 28
+
+    // MARK: 字幕 / 文字样式（按 1080p 画布为基准，渲染时按比例缩放）
+    /// 文字颜色 0xRRGGBB
+    var textColorHex: Int = 0xFFFFFF
+    /// 文字底衬不透明度，0 表示无底衬
+    var textBoxOpacity: Double = 0.42
+    /// 文字距画面底部的比例（0 贴底，1 顶部）
+    var textOffsetY: Double = 0.12
+    var textBold: Bool = true
+
+    init() {}
+
+    // 手写解码：新增字段在旧存档里缺失时回落到默认值
+    enum CodingKeys: String, CodingKey {
+        case scale, rotation, opacity, volume, speed, fadeIn, fadeOut
+        case textContent, fontSize
+        case textColorHex, textBoxOpacity, textOffsetY, textBold
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        scale = try c.decodeIfPresent(Double.self, forKey: .scale) ?? 1.0
+        rotation = try c.decodeIfPresent(Double.self, forKey: .rotation) ?? 0
+        opacity = try c.decodeIfPresent(Double.self, forKey: .opacity) ?? 1.0
+        volume = try c.decodeIfPresent(Double.self, forKey: .volume) ?? 1.0
+        speed = try c.decodeIfPresent(Double.self, forKey: .speed) ?? 1.0
+        fadeIn = try c.decodeIfPresent(Double.self, forKey: .fadeIn) ?? 0.5
+        fadeOut = try c.decodeIfPresent(Double.self, forKey: .fadeOut) ?? 0.5
+        textContent = try c.decodeIfPresent(String.self, forKey: .textContent) ?? ""
+        fontSize = try c.decodeIfPresent(Int.self, forKey: .fontSize) ?? 28
+        textColorHex = try c.decodeIfPresent(Int.self, forKey: .textColorHex) ?? 0xFFFFFF
+        textBoxOpacity = try c.decodeIfPresent(Double.self, forKey: .textBoxOpacity) ?? 0.42
+        textOffsetY = try c.decodeIfPresent(Double.self, forKey: .textOffsetY) ?? 0.12
+        textBold = try c.decodeIfPresent(Bool.self, forKey: .textBold) ?? true
+    }
 }
 
 struct TimelineItem: Identifiable, Hashable, Codable {
@@ -257,6 +292,8 @@ struct TimelineItem: Identifiable, Hashable, Codable {
     /// 入点转场
     var transition: TransitionType
     var transitionDuration: Double
+    /// 同类轨道内的层号（音频 A1 / A2 …），0 为第一层
+    var trackLane: Int
     var properties: ItemProperties
     var assetURL: URL?
 
@@ -276,6 +313,7 @@ struct TimelineItem: Identifiable, Hashable, Codable {
         self.sourceStart = 0
         self.transition = .none
         self.transitionDuration = 0.6
+        self.trackLane = 0
         self.properties = ItemProperties()
     }
 
@@ -289,11 +327,20 @@ struct TimelineItem: Identifiable, Hashable, Codable {
         }
     }
 
+    /// 该类型轨道最多支持几层
+    static func laneCount(for kind: TimelineTrack) -> Int {
+        switch kind {
+        case .video: return 1
+        case .audio: return 2
+        case .subtitle: return 1
+        }
+    }
+
     // MARK: Codable（对旧版本文件保持容错）
 
     enum CodingKeys: String, CodingKey {
         case id, assetID, type, name, startTime, duration
-        case sourceStart, transition, transitionDuration, properties, assetURL
+        case sourceStart, transition, transitionDuration, trackLane, properties, assetURL
     }
 
     init(from decoder: Decoder) throws {
@@ -307,6 +354,7 @@ struct TimelineItem: Identifiable, Hashable, Codable {
         sourceStart = try c.decodeIfPresent(Double.self, forKey: .sourceStart) ?? 0
         transition = try c.decodeIfPresent(TransitionType.self, forKey: .transition) ?? .none
         transitionDuration = try c.decodeIfPresent(Double.self, forKey: .transitionDuration) ?? 0.6
+        trackLane = try c.decodeIfPresent(Int.self, forKey: .trackLane) ?? 0
         properties = try c.decodeIfPresent(ItemProperties.self, forKey: .properties) ?? ItemProperties()
         assetURL = try c.decodeIfPresent(URL.self, forKey: .assetURL)
     }

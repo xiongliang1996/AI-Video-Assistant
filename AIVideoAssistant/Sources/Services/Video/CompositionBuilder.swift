@@ -201,7 +201,15 @@ enum CompositionBuilder {
         }
 
         // 4. 独立音频轨（配音 / 音乐）
-        for (index, item) in audioItems.enumerated() {
+        //    尊重用户指定的层号；同一层时间段冲突时顺延到下一层
+        var laneRanges: [Int: [(Double, Double)]] = [:]
+
+        func isFree(_ lane: Int, _ start: Double, _ end: Double) -> Bool {
+            guard let ranges = laneRanges[lane] else { return true }
+            return !ranges.contains { start < $0.1 - 0.01 && end > $0.0 + 0.01 }
+        }
+
+        for item in audioItems {
             guard let url = item.assetURL else { continue }
             let asset = AVURLAsset(url: url)
             guard let aTrack = try? await asset.loadTracks(withMediaType: .audio).first,
@@ -213,20 +221,31 @@ enum CompositionBuilder {
             guard available > 0.05 else { continue }
 
             let take = min(item.duration, available)
-            let start = CMTime(seconds: item.startTime, preferredTimescale: 600)
+            let startSeconds = item.startTime
+            let endSeconds = startSeconds + take
+
+            var lane = max(0, item.trackLane)
+            var guardCount = 0
+            while !isFree(lane, startSeconds, endSeconds) && guardCount < 4 {
+                lane += 1
+                guardCount += 1
+            }
+
+            let start = CMTime(seconds: startSeconds, preferredTimescale: 600)
             let range = CMTimeRange(start: CMTime(seconds: sourceIn, preferredTimescale: 600),
                                     duration: CMTime(seconds: take, preferredTimescale: 600))
 
-            guard let dest = audioTrack(from: &clipAudioTracks, slot: index % 2) else { continue }
+            guard let dest = audioTrack(from: &clipAudioTracks, slot: lane) else { continue }
             do {
                 try dest.insertTimeRange(range, of: aTrack, at: start)
+                laneRanges[lane, default: []].append((startSeconds, endSeconds))
                 applyVolume(params(for: dest),
                             volume: item.properties.volume,
-                            start: item.startTime,
-                            end: item.startTime + take,
+                            start: startSeconds,
+                            end: endSeconds,
                             fadeIn: item.properties.fadeIn,
                             fadeOut: item.properties.fadeOut)
-                endCursor = max(endCursor, item.startTime + take)
+                endCursor = max(endCursor, endSeconds)
             } catch {
                 continue
             }
@@ -242,6 +261,7 @@ enum CompositionBuilder {
                                    fps: fps,
                                    totalDuration: endCursor)
             : nil
+
 
         let audioMix: AVAudioMix? = audioParams.isEmpty
             ? nil

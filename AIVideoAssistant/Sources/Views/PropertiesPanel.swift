@@ -101,6 +101,22 @@ struct PropertiesPanel: View {
             if item.sourceStart > 0.01 {
                 infoRow("源入点", formatTimecode(item.sourceStart))
             }
+
+            if TimelineItem.laneCount(for: item.trackKind) > 1 {
+                HStack(spacing: 8) {
+                    Text("轨道")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Theme.text2)
+                        .frame(width: 52, alignment: .leading)
+                    SegmentedControl(options: Array(0..<TimelineItem.laneCount(for: item.trackKind)),
+                                     title: { "A\($0 + 1)" },
+                                     selection: Binding(
+                                        get: { item.trackLane },
+                                        set: { appState.moveToLane(item, lane: $0) }
+                                     ))
+                }
+                .frame(height: 27)
+            }
         }
     }
 
@@ -147,7 +163,7 @@ struct PropertiesPanel: View {
                                     set: { newValue in
                                         var copy = item
                                         copy.properties.speed = newValue
-                                        appState.updateItem(copy)
+                                        appState.updateItem(copy, recordUndo: true)
                                     }
                                  ))
             }
@@ -172,7 +188,7 @@ struct PropertiesPanel: View {
                             copy.transition = type
                             if type == .none { copy.transitionDuration = 0 }
                             else if copy.transitionDuration <= 0 { copy.transitionDuration = 0.6 }
-                            appState.updateItem(copy)
+                            appState.updateItem(copy, recordUndo: true)
                         } label: {
                             if item.transition == type {
                                 Label(type.label, systemImage: "checkmark")
@@ -209,7 +225,7 @@ struct PropertiesPanel: View {
                             set: { newValue in
                                 var copy = item
                                 copy.transitionDuration = newValue
-                                appState.updateItem(copy)
+                                appState.updateItem(copy, recordUndo: true)
                             }
                           ),
                           range: 0.15...1.5,
@@ -239,7 +255,7 @@ struct PropertiesPanel: View {
                 set: { newValue in
                     var copy = item
                     copy.properties.textContent = newValue
-                    appState.updateItem(copy)
+                    appState.updateItem(copy, recordUndo: true)
                 }
             ))
             .textFieldStyle(.roundedBorder)
@@ -250,7 +266,7 @@ struct PropertiesPanel: View {
                 set: { newValue in
                     var copy = item
                     copy.properties.fontSize = newValue
-                    appState.updateItem(copy)
+                    appState.updateItem(copy, recordUndo: true)
                 }
             ), in: 8...200) {
                 Text("字号 \(item.properties.fontSize) px")
@@ -258,8 +274,81 @@ struct PropertiesPanel: View {
                     .foregroundStyle(Theme.text2)
             }
             .padding(.top, 8)
+
+            HStack(spacing: 8) {
+                Text("颜色")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Theme.text2)
+                    .frame(width: 52, alignment: .leading)
+                HStack(spacing: 6) {
+                    ForEach(Array(Self.textColors.enumerated()), id: \.offset) { _, hex in
+                        Button {
+                            var copy = item
+                            copy.properties.textColorHex = hex
+                            appState.updateItem(copy, recordUndo: true)
+                        } label: {
+                            Circle()
+                                .fill(Color(hex: UInt32(hex)))
+                                .frame(width: 17, height: 17)
+                                .overlay(Circle().stroke(Color.black.opacity(0.12), lineWidth: 1))
+                                .overlay(
+                                    Circle()
+                                        .stroke(Theme.accent, lineWidth: item.properties.textColorHex == hex ? 2 : 0)
+                                        .padding(-2.5)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(height: 28)
+
+            SliderRow(label: "底衬",
+                      value: Binding(
+                        get: { item.properties.textBoxOpacity },
+                        set: { newValue in
+                            var copy = item
+                            copy.properties.textBoxOpacity = newValue
+                            appState.updateItem(copy, recordUndo: true)
+                        }
+                      ),
+                      range: 0...0.9,
+                      display: "\(Int(item.properties.textBoxOpacity * 100))%")
+
+            SliderRow(label: "位置",
+                      value: Binding(
+                        get: { item.properties.textOffsetY },
+                        set: { newValue in
+                            var copy = item
+                            copy.properties.textOffsetY = newValue
+                            appState.updateItem(copy, recordUndo: true)
+                        }
+                      ),
+                      range: 0.02...0.6,
+                      display: String(format: "%.0f%%", item.properties.textOffsetY * 100))
+
+            HStack(spacing: 8) {
+                Text("字重")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Theme.text2)
+                    .frame(width: 52, alignment: .leading)
+                SegmentedControl(options: [true, false],
+                                 title: { $0 ? "粗体" : "常规" },
+                                 selection: Binding(
+                                    get: { item.properties.textBold },
+                                    set: { newValue in
+                                        var copy = item
+                                        copy.properties.textBold = newValue
+                                        appState.updateItem(copy, recordUndo: true)
+                                    }
+                                 ))
+            }
+            .frame(height: 27)
         }
     }
+
+    static let textColors: [Int] = [0xFFFFFF, 0xFFD166, 0x7C6BFF, 0x12B76A, 0xFF5A5F, 0x111318]
 
     // MARK: 属性绑定
 
@@ -270,7 +359,7 @@ struct PropertiesPanel: View {
             set: { newValue in
                 var copy = item
                 copy.properties[keyPath: keyPath] = newValue
-                appState.updateItem(copy)
+                appState.updateItem(copy, recordUndo: true)
             }
         )
     }

@@ -54,13 +54,19 @@ struct EditorToolbar: View {
 
             Rectangle().fill(Theme.line2).frame(width: 1, height: 18)
 
-            Button {} label: { Image(systemName: "arrow.uturn.backward") }
+            Button {
+                appState.undo()
+            } label: { Image(systemName: "arrow.uturn.backward") }
                 .buttonStyle(IconButtonStyle())
-                .help("撤销")
+                .disabled(!appState.canUndo)
+                .help("撤销 ⌘Z")
 
-            Button {} label: { Image(systemName: "arrow.uturn.forward") }
+            Button {
+                appState.redo()
+            } label: { Image(systemName: "arrow.uturn.forward") }
                 .buttonStyle(IconButtonStyle())
-                .help("重做")
+                .disabled(!appState.canRedo)
+                .help("重做 ⇧⌘Z")
 
             Button {
                 appState.isPlaying.toggle()
@@ -268,10 +274,10 @@ struct PreviewStage: View {
 
     var body: some View {
         GeometryReader { geo in
-            let height = min(geo.size.height - 20, (geo.size.width - 32) * 9 / 16)
-            let width = height * 16 / 9
+            let videoHeight = max(120, min(geo.size.height - 20, (geo.size.width - 32) * 9 / 16))
+            let videoWidth = max(200, videoHeight * 16 / 9)
 
-            ZStack {
+            ZStack(alignment: .bottom) {
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
                     .fill(Color(hex: 0x0B0C11))
                     .overlay(
@@ -282,9 +288,14 @@ struct PreviewStage: View {
 
                 if let player = appState.previewPlayer {
                     PlayerLayerView(player: player)
-                        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                 } else {
                     TitleCard()
+                }
+
+                // 字幕覆盖层：与导出烧录用同一套样式参数
+                if let subtitle = appState.activeSubtitle {
+                    SubtitleOverlay(item: subtitle, stageHeight: videoHeight)
+                        .padding(.bottom, videoHeight * CGFloat(min(max(subtitle.properties.textOffsetY, 0), 0.85)))
                 }
 
                 if let status = appState.previewStatus {
@@ -301,6 +312,7 @@ struct PreviewStage: View {
                         RoundedRectangle(cornerRadius: 9, style: .continuous)
                             .fill(Color.black.opacity(0.45))
                     )
+                    .frame(maxHeight: .infinity)
                 }
 
                 VStack {
@@ -318,12 +330,40 @@ struct PreviewStage: View {
                 .padding(10)
                 .allowsHitTesting(false)
             }
-            .frame(width: max(200, width), height: max(120, height))
+            .frame(width: videoWidth, height: videoHeight)
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .padding(.horizontal, 16)
         .padding(.top, 14)
         .padding(.bottom, 4)
+    }
+}
+
+// MARK: - 字幕覆盖层
+
+struct SubtitleOverlay: View {
+    let item: TimelineItem
+    let stageHeight: CGFloat
+
+    var body: some View {
+        let p = item.properties
+        let fs = max(6, CGFloat(p.fontSize) * stageHeight / SubtitleRenderer.designHeight)
+        let stageWidth = stageHeight * 16 / 9
+
+        Text(SubtitleRenderer.text(of: item))
+            .font(.system(size: fs, weight: p.textBold ? .bold : .regular))
+            .foregroundStyle(Color(hex: UInt32(max(0, p.textColorHex))))
+            .multilineTextAlignment(.center)
+            .lineLimit(3)
+            .padding(.horizontal, fs * 0.52)
+            .padding(.vertical, fs * 0.26)
+            .background(
+                RoundedRectangle(cornerRadius: fs * 0.34, style: .continuous)
+                    .fill(Color.black.opacity(min(max(p.textBoxOpacity, 0), 1)))
+            )
+            .frame(maxWidth: stageWidth * 0.92)
+            .allowsHitTesting(false)
     }
 }
 

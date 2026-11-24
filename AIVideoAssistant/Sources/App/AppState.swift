@@ -67,6 +67,18 @@ final class AppState: ObservableObject {
     @Published var toast: String?
     @Published var errorMessage: String?
 
+    // 撤销 / 重做
+    @Published private(set) var canUndo = false
+    @Published private(set) var canRedo = false
+    private var undoStack: [EditSnapshot] = []
+    private var redoStack: [EditSnapshot] = []
+    private var lastUndoStamp: Date = .distantPast
+
+    struct EditSnapshot: Equatable {
+        var timeline: [TimelineItem]
+        var selectedItemID: UUID?
+    }
+
     private var toastWorkItem: DispatchWorkItem?
     private var cancellables = Set<AnyCancellable>()
     private var previewGeneration = 0
@@ -144,9 +156,32 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// 同一轨道上相邻片段的边界，用于拖拽时避免重叠
+    /// 指定层上的片段（音频分层用）
+    func clips(on track: TimelineTrack, lane: Int) -> [TimelineItem] {
+        clips(on: track).filter { $0.trackLane == lane }
+    }
+
+    /// 当前时间点应显示的字幕
+    var activeSubtitle: TimelineItem? {
+        SubtitleRenderer.activeItem(at: currentTime, in: timeline)
+    }
+
+    /// 该层上指定时间范围是否空闲
+    func laneIsFree(_ track: TimelineTrack, lane: Int, start: Double, end: Double) -> Bool {
+        !clips(on: track, lane: lane).contains { start < $0.endTime - 0.01 && end > $0.startTime + 0.01 }
+    }
+
+    /// 为音频片段找一个不冲突的层
+    func firstFreeAudioLane(start: Double, end: Double) -> Int {
+        for lane in 0..<TimelineItem.laneCount(for: .audio) {
+            if laneIsFree(.audio, lane: lane, start: start, end: end) { return lane }
+        }
+        return 0
+    }
+
+    /// 同一轨道同一层上相邻片段的边界，用于拖拽时避免重叠
     func neighbors(of item: TimelineItem) -> (prevEnd: Double, nextStart: Double) {
-        let siblings = clips(on: item.trackKind).filter { $0.id != item.id }
+        let siblings = clips(on: item.trackKind, lane: item.trackLane).filter { $0.id != item.id }
         let prevEnd = siblings.filter { $0.endTime <= item.startTime + 0.001 }
             .map(\.endTime)
             .max() ?? 0
@@ -176,6 +211,7 @@ final class AppState: ObservableObject {
         currentTime = 0
         isPlaying = false
         previewPlayer?.pause()
+        resetHistory()
         saveNow()
         notify("已创建项目「\(name)」")
     }
@@ -200,7 +236,15 @@ final class AppState: ObservableObject {
         currentTime = snapshot.currentTime
         isPlaying = false
         previewPlayer?.pause()
+        resetHistory()
         loadMediaMetadata()
+    }
+
+    private func resetHistory() {
+        undoStack.removeAll()
+        redoStack.removeAll()
+        lastUndoStamp = .distantPast
+        refreshUndoFlags()
     }
 
     func deleteProject(_ project: VideoProject) {
@@ -346,6 +390,7 @@ final class AppState: ObservableObject {
         mediaLibrary.append(asset)
         Task { await asset.loadMetadata() }
 
+        beginEdit()
         let start = totalDuration
         var item = TimelineItem(type: .aiGenerated,
                                 name: name,
@@ -361,6 +406,7 @@ final class AppState: ObservableObject {
     // MARK: - 时间线
 
     func addToTimeline(_ asset: MediaAsset) {
+        beginEdit()
         let start = totalDuration
         let duration = asset.duration > 0 ? asset.duration : 5
         var item = TimelineItem(type: asset.type == .audio ? .audio : .video,
@@ -369,35 +415,119 @@ final class AppState: ObservableObject {
                                 duration: duration,
                                 assetURL: asset.url)
         item.assetID = asset.id
+        if item.type == .audio {
+            item.trackLane = firstFreeAudioLane(start: start, end: start + duration)
+        }
         timeline.append(item)
         selectedItemID = item.id
         notify("「\(asset.name)」已加入时间线")
     }
 
-    func addSubtitle(_ entry: SubtitleEntry) {
+    func addSubtitle(_ entry: SubtitleEntry,
+                     fontSize: Int = 28,
+                     colorHex: Int = 0xFFFFFF) {
         var item = TimelineItem(type: .subtitle,
                                 name: entry.text,
                                 startTime: entry.startTime,
                                 duration: max(0.5, entry.endTime - entry.startTime))
         item.properties.textContent = entry.text
+        item.properties.fontSize = fontSize
+        item.properties.textColorHex = colorHex
         timeline.append(item)
     }
 
-    func addSubtitles(_ entries: [SubtitleEntry]) {
-        entries.forEach { addSubtitle($0) }
+    func addSubtitles(_ entries: [SubtitleEntry],
+                      fontSize: Int = 28,
+                      colorHex: Int = 0xFFFFFF) {
+        guard !entries.isEmpty else { return }
+        beginEdit()
+        entries.forEach { addSubtitle($0, fontSize: fontSize, colorHex: colorHex) }
         notify("已添加 \(entries.count) 条字幕")
     }
 
     func removeSelectedItem() {
         guard let id = selectedItemID else { return }
+        beginEdit()
         timeline.removeAll { $0.id == id }
         selectedItemID = nil
         notify("已删除片段")
     }
 
-    func updateItem(_ item: TimelineItem) {
+    /// recordUndo=true 时把这次修改纳入撤销栈（滑杆连续拖动会在 1 秒内合并）
+    func updateItem(_ item: TimelineItem, recordUndo: Bool = false) {
         guard let index = timeline.firstIndex(where: { $0.id == item.id }) else { return }
+        if recordUndo { beginEdit(coalescing: true) }
         timeline[index] = item
+    }
+
+    /// 把片段移到另一层（音频 A1/A2）
+    func moveToLane(_ item: TimelineItem, lane: Int) {
+        let kind = item.trackKind
+        let maxLane = TimelineItem.laneCount(for: kind)
+        guard maxLane > 1 else { return }
+        let target = min(max(0, lane), maxLane - 1)
+        guard target != item.trackLane else { return }
+        guard laneIsFree(kind, lane: target, start: item.startTime, end: item.endTime) else {
+            notify("该轨道这个时间段已被占用")
+            return
+        }
+        beginEdit()
+        var copy = item
+        copy.trackLane = target
+        if let index = timeline.firstIndex(where: { $0.id == item.id }) {
+            timeline[index] = copy
+        }
+    }
+
+    // MARK: - 撤销 / 重做
+
+    /// 记录一次编辑前的状态。coalescing=true 时在 1 秒内合并（用于滑杆连续拖动）
+    func beginEdit(coalescing: Bool = false) {
+        let now = Date()
+        if coalescing, now.timeIntervalSince(lastUndoStamp) < 1.0 {
+            lastUndoStamp = now
+            return
+        }
+        lastUndoStamp = now
+
+        let snapshot = EditSnapshot(timeline: timeline, selectedItemID: selectedItemID)
+        if undoStack.last != snapshot {
+            undoStack.append(snapshot)
+            if undoStack.count > 120 { undoStack.removeFirst() }
+        }
+        redoStack.removeAll()
+        refreshUndoFlags()
+    }
+
+    func undo() {
+        guard let previous = undoStack.popLast() else { return }
+        redoStack.append(EditSnapshot(timeline: timeline, selectedItemID: selectedItemID))
+        applySnapshot(previous)
+        lastUndoStamp = .distantPast
+        refreshUndoFlags()
+        notify("已撤销")
+    }
+
+    func redo() {
+        guard let next = redoStack.popLast() else { return }
+        undoStack.append(EditSnapshot(timeline: timeline, selectedItemID: selectedItemID))
+        applySnapshot(next)
+        lastUndoStamp = .distantPast
+        refreshUndoFlags()
+        notify("已重做")
+    }
+
+    private func applySnapshot(_ snapshot: EditSnapshot) {
+        timeline = snapshot.timeline
+        selectedItemID = snapshot.selectedItemID
+        if let id = snapshot.selectedItemID, !timeline.contains(where: { $0.id == id }) {
+            selectedItemID = nil
+        }
+    }
+
+    private func refreshUndoFlags() {
+        canUndo = !undoStack.isEmpty
+        canRedo = !redoStack.isEmpty
     }
 
     // MARK: - 播放
@@ -573,13 +703,19 @@ final class AppState: ObservableObject {
     // MARK: - 示例数据
 
     private func seedDemoTimelineIfNeeded() {
+        var music = TimelineItem(type: .audio, name: "背景音乐 · Ambient", startTime: 0, duration: 20)
+        music.trackLane = 0
+        var voice = TimelineItem(type: .audio, name: "AI 配音 · 晓晓", startTime: 6.9, duration: 11.2)
+        voice.trackLane = 1
+        voice.properties.volume = 1.2
+
         timeline = [
             TimelineItem(type: .video, name: "品牌开场", startTime: 0, duration: 6),
             TimelineItem(type: .video, name: "产品特写", startTime: 6, duration: 10),
             TimelineItem(type: .aiGenerated, name: "AI 生成片段", startTime: 16, duration: 5),
             TimelineItem(type: .video, name: "片尾 Logo", startTime: 21, duration: 7),
-            TimelineItem(type: .audio, name: "背景音乐 · Ambient", startTime: 0, duration: 20),
-            TimelineItem(type: .audio, name: "AI 配音 · 晓晓", startTime: 6.9, duration: 11.2),
+            music,
+            voice,
             TimelineItem(type: .subtitle, name: "用 AI 讲一个好故事", startTime: 0.8, duration: 4.6),
             TimelineItem(type: .subtitle, name: "从一句描述开始创作", startTime: 6.5, duration: 5.8),
             TimelineItem(type: .subtitle, name: "让灵感即刻成片", startTime: 13, duration: 5),

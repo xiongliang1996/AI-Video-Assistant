@@ -43,6 +43,14 @@ struct AIVideoAssistantApp: App {
                 Button("导出视频…") { appState.exportVideo() }
                     .keyboardShortcut("e", modifiers: .command)
             }
+            CommandGroup(replacing: .undoRedo) {
+                Button("撤销") { appState.undo() }
+                    .keyboardShortcut("z", modifiers: .command)
+                    .disabled(!appState.canUndo)
+                Button("重做") { appState.redo() }
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
+                    .disabled(!appState.canRedo)
+            }
             CommandMenu("AI") {
                 Button("AI 生视频") { appState.selectedPanel = .generate }
                     .keyboardShortcut("g", modifiers: .command)

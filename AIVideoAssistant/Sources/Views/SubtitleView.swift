@@ -20,6 +20,7 @@ struct SubtitleView: View {
     @State private var textColor = 0
 
     private let colors: [Color] = [.white, Color(hex: 0xFFD166), Color(hex: 0x7C6BFF), Color(hex: 0x12B76A)]
+    private let colorHexes: [Int] = [0xFFFFFF, 0xFFD166, 0x7C6BFF, 0x12B76A]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -60,7 +61,7 @@ struct SubtitleView: View {
             .disabled(subtitles.isEmpty)
 
             Button {
-                appState.addSubtitles(subtitles)
+                appState.addSubtitles(subtitles, fontSize: Int(fontSize), colorHex: colorHexes[textColor])
             } label: {
                 Label("全部加入时间线", systemImage: "plus")
                     .font(.system(size: 12.5, weight: .medium))
@@ -328,7 +329,7 @@ struct SubtitleView: View {
                         .foregroundStyle(Theme.text3)
                     Spacer()
                     Button {
-                        appState.addSubtitles(subtitles)
+                        appState.addSubtitles(subtitles, fontSize: Int(fontSize), colorHex: colorHexes[textColor])
                     } label: {
                         Label("加入时间线", systemImage: "plus")
                             .font(.system(size: 11.5))

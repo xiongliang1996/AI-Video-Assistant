@@ -48,9 +48,10 @@ struct TimelineView: View {
                                 .contentShape(Rectangle())
                                 .gesture(scrubGesture)
 
-                            track(for: appState.videoClips)
-                            track(for: appState.audioClips)
-                            track(for: appState.subtitleClips)
+                            track(for: .video, lane: 0)
+                            track(for: .audio, lane: 0)
+                            track(for: .audio, lane: 1)
+                            track(for: .subtitle, lane: 0)
                         }
 
                         if let snapTime {
@@ -62,7 +63,7 @@ struct TimelineView: View {
                 }
             }
         }
-        .frame(height: 206)
+        .frame(height: 242)
         .background(Theme.panel2)
         .overlay(alignment: .top) {
             Rectangle().fill(Theme.line).frame(height: 1)
@@ -133,7 +134,8 @@ struct TimelineView: View {
         VStack(spacing: 0) {
             Color.clear.frame(height: 22)
             head("V1", "视频")
-            head("A1", "音频")
+            head("A1", "音乐")
+            head("A2", "配音")
             head("S1", "字幕")
         }
         .frame(width: headWidth)
@@ -158,8 +160,9 @@ struct TimelineView: View {
 
     // MARK: - 轨道
 
-    private func track(for items: [TimelineItem]) -> some View {
-        ZStack(alignment: .leading) {
+    private func track(for kind: TimelineTrack, lane: Int) -> some View {
+        let items = appState.clips(on: kind, lane: lane)
+        return ZStack(alignment: .leading) {
             Rectangle()
                 .fill(Color.clear)
                 .frame(height: trackHeight)
@@ -198,7 +201,6 @@ struct TimelineView: View {
             .offset(x: CGFloat(item.startTime) * pps)
             .zIndex(appState.selectedItemID == item.id ? 2 : 1)
     }
-
     private var playhead: some View {
         VStack(spacing: 0) {
             Image(systemName: "arrowtriangle.down.fill")
@@ -237,7 +239,7 @@ struct TimelineView: View {
 
     private func handleDrag(_ item: TimelineItem,
                             mode: DragMode,
-                            translation: CGFloat,
+                            translation: CGSize,
                             ended: Bool) {
         if ended {
             dragOrigin = nil
@@ -249,70 +251,88 @@ struct TimelineView: View {
         if dragOrigin?.id != item.id || dragMode != mode {
             dragOrigin = item
             dragMode = mode
+            // 一次拖拽只记一个撤销点
+            appState.beginEdit()
         }
         guard let origin = dragOrigin else { return }
 
         appState.selectedItemID = item.id
 
-        let delta = Double(translation / pps)
-        let neighbors = appState.neighbors(of: origin)
+        let delta = Double(translation.width / pps)
+
+        // 垂直拖动切换轨道层（音频 A1/A2）
+        var working = origin
+        let laneCount = TimelineItem.laneCount(for: origin.trackKind)
+        if mode == .move, laneCount > 1 {
+            let laneDelta = Int((translation.height / trackHeight).rounded())
+            let target = min(max(0, origin.trackLane + laneDelta), laneCount - 1)
+            if target != origin.trackLane,
+               appState.laneIsFree(origin.trackKind,
+                                   lane: target,
+                                   start: origin.startTime,
+                                   end: origin.endTime) {
+                working.trackLane = target
+            }
+        }
+
+        let neighbors = appState.neighbors(of: working)
         let points = snapCandidates(excluding: origin)
         let threshold = Double(8 / pps)
-        var updated = origin
+        var updated = working
         var snapped: Double?
 
         switch mode {
         case .move:
             let lower = max(0, neighbors.prevEnd)
             let upper: Double = neighbors.nextStart.isFinite
-                ? max(lower, neighbors.nextStart - origin.duration)
+                ? max(lower, neighbors.nextStart - working.duration)
                 : .greatestFiniteMagnitude
 
-            var start = origin.startTime + delta
+            var start = working.startTime + delta
 
             if let s = nearest(start, in: points, threshold: threshold) {
                 start = s
                 snapped = s
-            } else if let s = nearest(start + origin.duration, in: points, threshold: threshold) {
-                start = s - origin.duration
+            } else if let s = nearest(start + working.duration, in: points, threshold: threshold) {
+                start = s - working.duration
                 snapped = s
             }
 
             start = min(max(start, lower), upper)
             if let s = snapped,
                abs(start - s) > 0.02,
-               abs(start + origin.duration - s) > 0.02 {
+               abs(start + working.duration - s) > 0.02 {
                 snapped = nil
             }
 
             updated.startTime = start
 
         case .trimStart:
-            let minStart = max(neighbors.prevEnd, origin.startTime - origin.sourceStart)
-            let maxStart = origin.endTime - minClipDuration
-            var start = min(max(origin.startTime + delta, minStart), maxStart)
+            let minStart = max(neighbors.prevEnd, working.startTime - working.sourceStart)
+            let maxStart = working.endTime - minClipDuration
+            var start = min(max(working.startTime + delta, minStart), maxStart)
 
             if let s = nearest(start, in: points, threshold: threshold) {
                 start = min(max(s, minStart), maxStart)
                 snapped = s
             }
 
-            let shift = start - origin.startTime
+            let shift = start - working.startTime
             updated.startTime = start
-            updated.duration = max(minClipDuration, origin.duration - shift)
-            updated.sourceStart = max(0, origin.sourceStart + shift)
+            updated.duration = max(minClipDuration, working.duration - shift)
+            updated.sourceStart = max(0, working.sourceStart + shift)
 
         case .trimEnd:
-            let maxEnd = min(neighbors.nextStart, origin.endTime + maxExtraTail(origin))
-            let minEnd = origin.startTime + minClipDuration
-            var end = min(max(origin.endTime + delta, minEnd), maxEnd)
+            let maxEnd = min(neighbors.nextStart, working.endTime + maxExtraTail(working))
+            let minEnd = working.startTime + minClipDuration
+            var end = min(max(working.endTime + delta, minEnd), maxEnd)
 
             if let s = nearest(end, in: points, threshold: threshold) {
                 end = min(max(s, minEnd), maxEnd)
                 snapped = s
             }
 
-            updated.duration = max(minClipDuration, end - origin.startTime)
+            updated.duration = max(minClipDuration, end - working.startTime)
         }
 
         snapTime = snapped
@@ -371,6 +391,7 @@ struct TimelineView: View {
         right.sourceStart = item.sourceStart + left.duration
         right.transition = .none
 
+        appState.beginEdit()
         appState.updateItem(left)
         appState.timeline.append(right)
         appState.selectedItemID = right.id
@@ -421,9 +442,9 @@ struct ClipView: View {
     let selected: Bool
 
     var onSelect: () -> Void
-    var onMove: (CGFloat, Bool) -> Void
-    var onTrimStart: (CGFloat, Bool) -> Void
-    var onTrimEnd: (CGFloat, Bool) -> Void
+    var onMove: (CGSize, Bool) -> Void
+    var onTrimStart: (CGSize, Bool) -> Void
+    var onTrimEnd: (CGSize, Bool) -> Void
 
     @State private var hovering = false
 
@@ -475,8 +496,8 @@ struct ClipView: View {
         .onHover { hovering = $0 }
         .gesture(
             DragGesture(minimumDistance: 2)
-                .onChanged { value in onMove(value.translation.width, false) }
-                .onEnded { value in onMove(value.translation.width, true) }
+                .onChanged { value in onMove(value.translation, false) }
+                .onEnded { value in onMove(value.translation, true) }
         )
         .simultaneousGesture(
             TapGesture().onEnded { onSelect() }
@@ -505,16 +526,16 @@ struct ClipView: View {
                 DragGesture(minimumDistance: 1)
                     .onChanged { value in
                         if isLeading {
-                            onTrimStart(value.translation.width, false)
+                            onTrimStart(value.translation, false)
                         } else {
-                            onTrimEnd(value.translation.width, false)
+                            onTrimEnd(value.translation, false)
                         }
                     }
                     .onEnded { value in
                         if isLeading {
-                            onTrimStart(value.translation.width, true)
+                            onTrimStart(value.translation, true)
                         } else {
-                            onTrimEnd(value.translation.width, true)
+                            onTrimEnd(value.translation, true)
                         }
                     }
             )
