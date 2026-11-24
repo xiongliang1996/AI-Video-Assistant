@@ -189,11 +189,9 @@ enum CompositionBuilder {
                                             toDuration: CMTime(seconds: playDuration, preferredTimescale: 600))
                     }
                     applyVolume(params(for: dest),
-                                volume: plan.item.properties.volume,
+                                properties: plan.item.properties,
                                 start: startSeconds,
-                                end: startSeconds + playDuration,
-                                fadeIn: plan.item.properties.fadeIn,
-                                fadeOut: plan.item.properties.fadeOut)
+                                end: startSeconds + playDuration)
                 } catch {
                     // 音频插入失败不影响画面
                 }
@@ -240,11 +238,9 @@ enum CompositionBuilder {
                 try dest.insertTimeRange(range, of: aTrack, at: start)
                 laneRanges[lane, default: []].append((startSeconds, endSeconds))
                 applyVolume(params(for: dest),
-                            volume: item.properties.volume,
+                            properties: item.properties,
                             start: startSeconds,
-                            end: endSeconds,
-                            fadeIn: item.properties.fadeIn,
-                            fadeOut: item.properties.fadeOut)
+                            end: endSeconds)
                 endCursor = max(endCursor, endSeconds)
             } catch {
                 continue
@@ -280,12 +276,29 @@ enum CompositionBuilder {
     // MARK: - 音量
 
     private static func applyVolume(_ params: AVMutableAudioMixInputParameters,
-                                    volume: Double,
+                                    properties: ItemProperties,
                                     start: Double,
-                                    end: Double,
-                                    fadeIn: Double,
-                                    fadeOut: Double) {
+                                    end: Double) {
+        let volume = properties.volume
+        let fadeIn = properties.fadeIn
+        let fadeOut = properties.fadeOut
         let level = Float(min(max(volume, 0), 2))
+
+        // 有关键帧时用逐段 ramp 覆盖整段，淡入淡出交给关键帧表达
+        let samples = properties.animationSamples(.volume, duration: end - start)
+        if samples.count > 1 {
+            for index in 1..<samples.count {
+                let a = samples[index - 1]
+                let b = samples[index]
+                guard b.time - a.time > 0.001 else { continue }
+                params.setVolumeRamp(fromStartVolume: Float(min(max(a.value, 0), 2)),
+                                     toEndVolume: Float(min(max(b.value, 0), 2)),
+                                     timeRange: CMTimeRange(
+                                        start: CMTime(seconds: start + a.time, preferredTimescale: 600),
+                                        duration: CMTime(seconds: b.time - a.time, preferredTimescale: 600)))
+            }
+            return
+        }
         let full = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 600),
                                duration: CMTime(seconds: max(0.01, end - start), preferredTimescale: 600))
         params.setVolumeRamp(fromStartVolume: level, toEndVolume: level, timeRange: full)
@@ -396,10 +409,47 @@ enum CompositionBuilder {
                                          range: CMTimeRange) -> AVMutableVideoCompositionLayerInstruction {
         let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: track)
         let base = baseTransform(plan: plan, renderSize: renderSize)
-        layer.setTransform(base, at: range.start)
-
         let start = CMTimeGetSeconds(range.start)
-        let opacity = Float(min(max(plan.item.properties.opacity, 0), 1))
+        let props = plan.item.properties
+        let clipDuration = max(0.05, plan.timelineDuration)
+
+        // 缩放：有关键帧就逐段做变换 ramp，否则用一个固定变换
+        let scaleSamples = props.animationSamples(.scale, duration: clipDuration)
+        if scaleSamples.count > 1 {
+            for index in 1..<scaleSamples.count {
+                let a = scaleSamples[index - 1]
+                let b = scaleSamples[index]
+                guard b.time - a.time > 0.001 else { continue }
+                let from = baseTransform(plan: plan, renderSize: renderSize, scaleOverride: a.value)
+                let to = baseTransform(plan: plan, renderSize: renderSize, scaleOverride: b.value)
+                layer.setTransformRamp(fromStart: from,
+                                       toEnd: to,
+                                       timeRange: CMTimeRange(
+                                        start: CMTime(seconds: start + a.time, preferredTimescale: 600),
+                                        duration: CMTime(seconds: b.time - a.time, preferredTimescale: 600)))
+            }
+        } else {
+            layer.setTransform(base, at: range.start)
+        }
+
+        let opacity = Float(min(max(props.opacity, 0), 1))
+
+        // 不透明度：有关键帧时整段由关键帧接管，淡入淡出不再叠加
+        let opacitySamples = props.animationSamples(.opacity, duration: clipDuration)
+        if opacitySamples.count > 1 {
+            for index in 1..<opacitySamples.count {
+                let a = opacitySamples[index - 1]
+                let b = opacitySamples[index]
+                guard b.time - a.time > 0.001 else { continue }
+                layer.setOpacityRamp(fromStartOpacity: Float(min(max(a.value, 0), 1)),
+                                     toEndOpacity: Float(min(max(b.value, 0), 1)),
+                                     timeRange: CMTimeRange(
+                                        start: CMTime(seconds: start + a.time, preferredTimescale: 600),
+                                        duration: CMTime(seconds: b.time - a.time, preferredTimescale: 600)))
+            }
+            return layer
+        }
+
         layer.setOpacity(opacity, at: range.start)
 
         // 入场淡入（有转场时由转场指令接管）
@@ -495,7 +545,9 @@ enum CompositionBuilder {
 
     // MARK: - 变换
 
-    private static func baseTransform(plan: ClipPlan, renderSize: CGSize) -> CGAffineTransform {
+    private static func baseTransform(plan: ClipPlan,
+                                      renderSize: CGSize,
+                                      scaleOverride: Double? = nil) -> CGAffineTransform {
         let raw = CGRect(origin: .zero, size: plan.naturalSize).applying(plan.preferredTransform)
         let width = abs(raw.width)
         let height = abs(raw.height)
@@ -503,7 +555,7 @@ enum CompositionBuilder {
 
         let rect = CGRect(x: raw.minX, y: raw.minY, width: width, height: height)
         let fit = min(renderSize.width / width, renderSize.height / height)
-        let userScale = max(0.01, plan.item.properties.scale)
+        let userScale = max(0.01, scaleOverride ?? plan.item.properties.scale)
         let scale = fit * userScale
 
         var transform = plan.preferredTransform

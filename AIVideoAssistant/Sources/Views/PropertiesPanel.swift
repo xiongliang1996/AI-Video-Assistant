@@ -8,6 +8,9 @@ import SwiftUI
 struct PropertiesPanel: View {
     @EnvironmentObject var appState: AppState
 
+    /// 每个片段记住自己上次看的关键帧属性
+    @State private var selectedProperty: [UUID: AnimatableProperty] = [:]
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -35,6 +38,10 @@ struct PropertiesPanel: View {
                         audio(item)
                         divider
                         effects(item)
+                        if item.type != .subtitle {
+                            divider
+                            keyframes(item)
+                        }
                         if item.type == .subtitle || item.type == .text {
                             divider
                             textSettings(item)
@@ -407,6 +414,177 @@ struct PropertiesPanel: View {
             }
             .frame(height: 27)
         }
+    }
+
+    // MARK: 关键帧
+
+    private func keyframes(_ item: TimelineItem) -> some View {
+        let property = kfProperty(for: item)
+        let list = item.properties.keyframes(for: property)
+        let localTime = max(0, min(item.duration, appState.currentTime - item.startTime))
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                groupHeader("point.topleft.down.to.point.bottomright.curvepath", "关键帧")
+                Spacer()
+                if !list.isEmpty {
+                    Button {
+                        var copy = item
+                        copy.properties.setKeyframes([], for: property)
+                        appState.updateItem(copy, recordUndo: true)
+                    } label: {
+                        Text("清空")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Theme.text3)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            SegmentedControl(options: availableProperties(for: item),
+                             title: { $0.label },
+                             selection: Binding(
+                                get: { property },
+                                set: { selectedProperty[item.id] = $0 }
+                             ))
+
+            // 曲线预览：把整段属性值画成折线，播放头位置画一条竖线
+            curvePreview(item: item, property: property)
+
+            HStack(spacing: 6) {
+                Text(String(format: "播放头 %.2fs", localTime))
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(Theme.text3)
+                Spacer()
+                Button {
+                    addKeyframe(item: item, property: property, at: localTime)
+                } label: {
+                    Label("加关键帧", systemImage: "plus")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(SoftButtonStyle(height: 26, active: true))
+            }
+
+            if list.isEmpty {
+                Text("还没有关键帧。把播放头移到片段内，点「加关键帧」记录当前值，再加一个就会自动补间。")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.text3)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(list) { frame in
+                        HStack(spacing: 6) {
+                            Text(String(format: "%.2fs", frame.time))
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(Theme.text2)
+                            Text(String(format: "%.2f%@", frame.value, property.unit))
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(Theme.text3)
+                            Spacer()
+                            Button {
+                                appState.seek(to: item.startTime + frame.time)
+                            } label: {
+                                Image(systemName: "arrow.right.to.line")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(Theme.text3)
+                            }
+                            .buttonStyle(.plain)
+                            Button {
+                                var copy = item
+                                copy.properties.setKeyframes(list.filter { $0.id != frame.id }, for: property)
+                                appState.updateItem(copy, recordUndo: true)
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(Theme.text3)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .frame(height: 24)
+                        .padding(.horizontal, 8)
+                        Rectangle().fill(Theme.line).frame(height: 1)
+                    }
+                }
+                .background(RoundedRectangle(cornerRadius: 6).fill(Theme.panel2))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.line, lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+        }
+    }
+
+    private func curvePreview(item: TimelineItem, property: AnimatableProperty) -> some View {
+        let duration = max(0.1, item.duration)
+        let range = property.range
+        let samples = item.properties.keyframes(for: property)
+        let headX = min(1, max(0, (appState.currentTime - item.startTime) / duration))
+
+        return GeometryReader { geo in
+            let w = geo.size.width
+            let h = geo.size.height
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: 6).fill(Theme.panel2)
+                RoundedRectangle(cornerRadius: 6).stroke(Theme.line, lineWidth: 1)
+
+                // 折线
+                Path { path in
+                    let steps = 40
+                    for step in 0...steps {
+                        let t = duration * Double(step) / Double(steps)
+                        let value = item.properties.animatedValue(property, at: t)
+                        let norm = (value - range.lowerBound) / max(0.0001, range.upperBound - range.lowerBound)
+                        let x = w * CGFloat(step) / CGFloat(steps)
+                        let y = h - CGFloat(min(1, max(0, norm))) * h
+                        if step == 0 { path.move(to: CGPoint(x: x, y: y)) } else { path.addLine(to: CGPoint(x: x, y: y)) }
+                    }
+                }
+                .stroke(Theme.accent, lineWidth: 1.5)
+
+                // 关键帧点
+                ForEach(samples) { frame in
+                    let norm = (frame.value - range.lowerBound) / max(0.0001, range.upperBound - range.lowerBound)
+                    Circle()
+                        .fill(Theme.accent)
+                        .frame(width: 5, height: 5)
+                        .position(x: w * CGFloat(frame.time / duration),
+                                  y: h - CGFloat(min(1, max(0, norm))) * h)
+                }
+
+                // 播放头
+                Rectangle()
+                    .fill(Theme.danger.opacity(0.6))
+                    .frame(width: 1)
+                    .offset(x: w * CGFloat(headX))
+            }
+        }
+        .frame(height: 46)
+    }
+
+    private func addKeyframe(item: TimelineItem, property: AnimatableProperty, at time: Double) {
+        var list = item.properties.keyframes(for: property)
+        let value = item.properties.animatedValue(property, at: time)
+        if let index = list.firstIndex(where: { abs($0.time - time) < 0.02 }) {
+            list[index].value = value
+        } else {
+            list.append(Keyframe(time: time, value: value))
+        }
+        var copy = item
+        copy.properties.setKeyframes(list, for: property)
+        appState.updateItem(copy, recordUndo: true)
+        appState.notify("已在 \(String(format: "%.2f", time))s 记录\(property.label)关键帧")
+    }
+
+    private func availableProperties(for item: TimelineItem) -> [AnimatableProperty] {
+        switch item.type {
+        case .audio: return [.volume]
+        case .subtitle: return [.opacity]
+        default: return [.scale, .opacity, .volume]
+        }
+    }
+
+    private func kfProperty(for item: TimelineItem) -> AnimatableProperty {
+        let allowed = availableProperties(for: item)
+        if let stored = selectedProperty[item.id], allowed.contains(stored) { return stored }
+        return allowed.first ?? .opacity
     }
 
     static let textColors: [Int] = [0xFFFFFF, 0xFFD166, 0x7C6BFF, 0x12B76A, 0xFF5A5F, 0x111318]

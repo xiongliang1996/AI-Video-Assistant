@@ -233,6 +233,58 @@ enum TransitionType: String, Codable, CaseIterable, Hashable {
     }
 }
 
+/// 一个关键帧：时间相对片段起点（秒），值为该属性的取值
+struct Keyframe: Codable, Hashable, Identifiable {
+    var id: UUID = UUID()
+    var time: Double
+    var value: Double
+
+    init(time: Double, value: Double) {
+        self.time = max(0, time)
+        self.value = value
+    }
+}
+
+/// 支持关键帧动画的属性
+enum AnimatableProperty: String, Codable, CaseIterable, Identifiable {
+    case scale, opacity, volume
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .scale: return "缩放"
+        case .opacity: return "不透明度"
+        case .volume: return "音量"
+        }
+    }
+
+    var unit: String {
+        switch self {
+        case .scale: return "×"
+        case .opacity: return ""
+        case .volume: return "×"
+        }
+    }
+
+    var range: ClosedRange<Double> {
+        switch self {
+        case .scale: return 0.2...3.0
+        case .opacity: return 0...1
+        case .volume: return 0...2
+        }
+    }
+
+    /// 该属性在片段属性里的静态取值（没有关键帧时用它）
+    func staticValue(_ p: ItemProperties) -> Double {
+        switch self {
+        case .scale: return p.scale
+        case .opacity: return p.opacity
+        case .volume: return p.volume
+        }
+    }
+}
+
 struct ItemProperties: Codable, Hashable {
     var scale: Double = 1.0
     var rotation: Double = 0
@@ -253,6 +305,9 @@ struct ItemProperties: Codable, Hashable {
     var textOffsetY: Double = 0.12
     var textBold: Bool = true
 
+    /// 关键帧：key = AnimatableProperty.rawValue，时间相对片段起点
+    var keyframes: [String: [Keyframe]] = [:]
+
     init() {}
 
     // 手写解码：新增字段在旧存档里缺失时回落到默认值
@@ -260,6 +315,7 @@ struct ItemProperties: Codable, Hashable {
         case scale, rotation, opacity, volume, speed, fadeIn, fadeOut
         case textContent, fontSize
         case textColorHex, textBoxOpacity, textOffsetY, textBold
+        case keyframes
     }
 
     init(from decoder: Decoder) throws {
@@ -277,6 +333,59 @@ struct ItemProperties: Codable, Hashable {
         textBoxOpacity = try c.decodeIfPresent(Double.self, forKey: .textBoxOpacity) ?? 0.42
         textOffsetY = try c.decodeIfPresent(Double.self, forKey: .textOffsetY) ?? 0.12
         textBold = try c.decodeIfPresent(Bool.self, forKey: .textBold) ?? true
+        keyframes = try c.decodeIfPresent([String: [Keyframe]].self, forKey: .keyframes) ?? [:]
+    }
+
+    // MARK: 关键帧
+
+    func keyframes(for property: AnimatableProperty) -> [Keyframe] {
+        (keyframes[property.rawValue] ?? []).sorted { $0.time < $1.time }
+    }
+
+    mutating func setKeyframes(_ list: [Keyframe], for property: AnimatableProperty) {
+        if list.isEmpty {
+            keyframes[property.rawValue] = nil
+        } else {
+            keyframes[property.rawValue] = list.sorted { $0.time < $1.time }
+        }
+    }
+
+    var hasAnyKeyframes: Bool {
+        keyframes.values.contains { !$0.isEmpty }
+    }
+
+    /// 采样：没有关键帧时返回静态值；有则按时间线性插值（两端保持端点值）
+    func animatedValue(_ property: AnimatableProperty, at time: Double) -> Double {
+        let list = keyframes(for: property)
+        guard let first = list.first, let last = list.last else {
+            return property.staticValue(self)
+        }
+        if time <= first.time { return first.value }
+        if time >= last.time { return last.value }
+        for index in 1..<list.count {
+            let a = list[index - 1]
+            let b = list[index]
+            if time >= a.time && time <= b.time {
+                let span = b.time - a.time
+                guard span > 0.0001 else { return b.value }
+                let ratio = (time - a.time) / span
+                return a.value + (b.value - a.value) * ratio
+            }
+        }
+        return last.value
+    }
+
+    /// 生成渲染用的采样点：片段起点、每个关键帧、片段终点（去重后按时间排序）
+    /// - Returns: [(相对片段时间, 值)]
+    func animationSamples(_ property: AnimatableProperty, duration: Double) -> [(time: Double, value: Double)] {
+        let list = keyframes(for: property).filter { $0.time <= duration + 0.001 }
+        guard !list.isEmpty else { return [] }
+        var points: [(time: Double, value: Double)] = [(0, animatedValue(property, at: 0))]
+        for frame in list where frame.time > 0.001 && frame.time < duration - 0.001 {
+            points.append((frame.time, frame.value))
+        }
+        points.append((duration, animatedValue(property, at: duration)))
+        return points
     }
 }
 
