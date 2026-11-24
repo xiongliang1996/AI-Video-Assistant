@@ -294,30 +294,54 @@ final class AppState: ObservableObject {
             return 0
         }
 
-        var moved = 0
-        var blocked = 0
-        beginEdit()
-        for item in targets {
-            guard let prev = previousClip(before: item) else { continue }
-            let nextStart = neighbors(of: item).nextStart
-            guard let target = TimelineLayout.snappedStart(item: item,
-                                                           previousEnd: prev.endTime,
-                                                           nextStart: nextStart) else {
-                if abs(item.startTime - prev.endTime) > TimelineLayout.transitionContiguity { blocked += 1 }
-                continue
+        // 先在副本上跑一遍：一是判断有没有活可干（别压空的撤销点），
+        // 二是吸附要「顺序」做——前一段挪完，后一段的参照物才更新
+        func plan(on items: [TimelineItem]) -> [(UUID, Double)] {
+            var working = items
+            var moves: [(UUID, Double)] = []
+            for item in targets {
+                guard let index = working.firstIndex(where: { $0.id == item.id }) else { continue }
+                let current = working[index]
+                let prevEnd = working
+                    .filter { $0.id != current.id
+                              && $0.trackKind == current.trackKind
+                              && $0.trackLane == current.trackLane
+                              && $0.startTime < current.startTime - 0.001 }
+                    .map(\.endTime).max()
+                guard let prevEnd else { continue }
+                let nextStart = working
+                    .filter { $0.id != current.id
+                              && $0.trackKind == current.trackKind
+                              && $0.trackLane == current.trackLane
+                              && $0.startTime >= current.startTime - 0.001 }
+                    .map(\.startTime).min() ?? .greatestFiniteMagnitude
+                guard let target = TimelineLayout.snappedStart(item: current,
+                                                               previousEnd: prevEnd,
+                                                               nextStart: nextStart) else { continue }
+                working[index].startTime = target
+                moves.append((current.id, target))
             }
-            var copy = item
-            copy.startTime = target
-            updateItem(copy)
-            moved += 1
+            return moves
         }
 
-        if moved == 0 {
-            notify(blocked > 0 ? "有 \(blocked) 段后面空间不够，没能吸附" : "所有转场片段已经相邻")
-        } else {
-            notify(blocked > 0 ? "已吸附 \(moved) 段，\(blocked) 段空间不够跳过" : "已吸附 \(moved) 段转场片段")
+        let moves = plan(on: timeline)
+        guard !moves.isEmpty else {
+            let stuck = targets.filter { item in
+                guard let prev = previousClip(before: item) else { return false }
+                return abs(item.startTime - prev.endTime) > TimelineLayout.transitionContiguity
+            }.count
+            notify(stuck > 0 ? "有 \(stuck) 段后面空间不够，没能吸附" : "所有转场片段已经相邻")
+            return 0
         }
-        return moved
+
+        beginEdit()
+        for (id, target) in moves {
+            guard var copy = timeline.first(where: { $0.id == id }) else { continue }
+            copy.startTime = target
+            updateItem(copy)
+        }
+        notify("已吸附 \(moves.count) 段转场片段")
+        return moves.count
     }
 
     // MARK: - 项目
