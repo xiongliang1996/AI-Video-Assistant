@@ -11,7 +11,7 @@ import Combine
 // MARK: - 视频项目
 
 struct VideoProject: Codable, Identifiable, Hashable {
-    let id: UUID
+    var id: UUID
     var name: String
     var createdAt: Date
     var updatedAt: Date
@@ -199,6 +199,40 @@ enum TimelineItemType: String, Codable, CaseIterable {
     }
 }
 
+/// 时间线轨道分类（决定片段落在哪条轨道上）
+enum TimelineTrack: String, Codable, Hashable {
+    case video, audio, subtitle
+}
+
+/// 转场类型：作用于片段入点，与前一个片段做过渡
+enum TransitionType: String, Codable, CaseIterable, Hashable {
+    case none
+    case crossDissolve
+    case fadeThroughBlack
+    case slideLeft
+    case zoomIn
+
+    var label: String {
+        switch self {
+        case .none: return "无"
+        case .crossDissolve: return "交叉溶解"
+        case .fadeThroughBlack: return "黑场过渡"
+        case .slideLeft: return "左滑推入"
+        case .zoomIn: return "缩放推入"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .none: return "minus"
+        case .crossDissolve: return "circle.lefthalf.filled"
+        case .fadeThroughBlack: return "moon.fill"
+        case .slideLeft: return "arrow.left.square"
+        case .zoomIn: return "plus.magnifyingglass"
+        }
+    }
+}
+
 struct ItemProperties: Codable, Hashable {
     var scale: Double = 1.0
     var rotation: Double = 0
@@ -211,13 +245,18 @@ struct ItemProperties: Codable, Hashable {
     var fontSize: Int = 28
 }
 
-struct TimelineItem: Identifiable, Hashable {
-    let id: UUID
+struct TimelineItem: Identifiable, Hashable, Codable {
+    var id: UUID
     var assetID: UUID?
     var type: TimelineItemType
     var name: String
     var startTime: Double
     var duration: Double
+    /// 素材内的入点（裁剪左边界时递增）
+    var sourceStart: Double
+    /// 入点转场
+    var transition: TransitionType
+    var transitionDuration: Double
     var properties: ItemProperties
     var assetURL: URL?
 
@@ -234,10 +273,43 @@ struct TimelineItem: Identifiable, Hashable {
         self.duration = duration
         self.assetID = assetID
         self.assetURL = assetURL
+        self.sourceStart = 0
+        self.transition = .none
+        self.transitionDuration = 0.6
         self.properties = ItemProperties()
     }
 
     var endTime: Double { startTime + duration }
+
+    var trackKind: TimelineTrack {
+        switch type {
+        case .video, .aiGenerated: return .video
+        case .audio: return .audio
+        case .subtitle, .text: return .subtitle
+        }
+    }
+
+    // MARK: Codable（对旧版本文件保持容错）
+
+    enum CodingKeys: String, CodingKey {
+        case id, assetID, type, name, startTime, duration
+        case sourceStart, transition, transitionDuration, properties, assetURL
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        assetID = try c.decodeIfPresent(UUID.self, forKey: .assetID)
+        type = try c.decode(TimelineItemType.self, forKey: .type)
+        name = try c.decode(String.self, forKey: .name)
+        startTime = try c.decode(Double.self, forKey: .startTime)
+        duration = try c.decode(Double.self, forKey: .duration)
+        sourceStart = try c.decodeIfPresent(Double.self, forKey: .sourceStart) ?? 0
+        transition = try c.decodeIfPresent(TransitionType.self, forKey: .transition) ?? .none
+        transitionDuration = try c.decodeIfPresent(Double.self, forKey: .transitionDuration) ?? 0.6
+        properties = try c.decodeIfPresent(ItemProperties.self, forKey: .properties) ?? ItemProperties()
+        assetURL = try c.decodeIfPresent(URL.self, forKey: .assetURL)
+    }
 }
 
 // MARK: - AI 配置

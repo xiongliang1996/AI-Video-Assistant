@@ -183,6 +183,12 @@ struct SidebarView: View {
             }
             Divider()
             Button("新建项目…") { appState.createProject() }
+            Button("打开项目…") { appState.openProject() }
+            Divider()
+            Button("在访达中显示项目文件") { appState.revealProjectFile() }
+            Button("删除当前项目", role: .destructive) {
+                appState.deleteProject(appState.currentProject)
+            }
         } label: {
             HStack(spacing: 8) {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)

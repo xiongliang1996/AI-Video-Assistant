@@ -6,6 +6,7 @@
 import SwiftUI
 import AVKit
 import AVFoundation
+import QuartzCore
 
 struct EditorView: View {
     @EnvironmentObject var appState: AppState
@@ -264,7 +265,6 @@ struct MediaThumb: View {
 
 struct PreviewStage: View {
     @EnvironmentObject var appState: AppState
-    @State private var player: AVPlayer?
 
     var body: some View {
         GeometryReader { geo in
@@ -280,12 +280,43 @@ struct PreviewStage: View {
                     )
                     .shadow(color: .black.opacity(0.28), radius: 16, y: 8)
 
-                if let player {
-                    VideoPlayer(player: player)
+                if let player = appState.previewPlayer {
+                    PlayerLayerView(player: player)
                         .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                 } else {
                     TitleCard()
                 }
+
+                if let status = appState.previewStatus {
+                    VStack(spacing: 7) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(status)
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.white.opacity(0.72))
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(Color.black.opacity(0.45))
+                    )
+                }
+
+                VStack {
+                    HStack {
+                        Spacer()
+                        Text("\(appState.currentProject.settings.resolution.rawValue) · \(appState.currentProject.settings.fps)fps")
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(.white.opacity(0.55))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Color.black.opacity(0.35)))
+                    }
+                    Spacer()
+                }
+                .padding(10)
+                .allowsHitTesting(false)
             }
             .frame(width: max(200, width), height: max(120, height))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -293,17 +324,49 @@ struct PreviewStage: View {
         .padding(.horizontal, 16)
         .padding(.top, 14)
         .padding(.bottom, 4)
-        .onAppear { refreshPlayer() }
-        .onChange(of: appState.selectedItemID) { _ in refreshPlayer() }
+    }
+}
+
+// MARK: - AVPlayer 图层（不带系统播放控件，跟自定义控制条联动）
+
+struct PlayerLayerView: NSViewRepresentable {
+    let player: AVPlayer
+
+    func makeNSView(context: Context) -> PlayerNSView {
+        let view = PlayerNSView()
+        view.playerLayer.videoGravity = .resizeAspect
+        view.playerLayer.player = player
+        return view
     }
 
-    private func refreshPlayer() {
-        if let item = appState.selectedItem,
-           let url = item.assetURL,
-           MediaType.detect(from: url) != .audio {
-            player = AVPlayer(url: url)
-        } else {
-            player = nil
+    func updateNSView(_ nsView: PlayerNSView, context: Context) {
+        if nsView.playerLayer.player !== player {
+            nsView.playerLayer.player = player
+        }
+    }
+
+    final class PlayerNSView: NSView {
+        let playerLayer = AVPlayerLayer()
+
+        override init(frame frameRect: NSRect) {
+            super.init(frame: frameRect)
+            wantsLayer = true
+            layer = CALayer()
+            layer?.backgroundColor = NSColor.black.cgColor
+            playerLayer.frame = bounds
+            layer?.addSublayer(playerLayer)
+        }
+
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+
+        override func layout() {
+            super.layout()
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            playerLayer.frame = bounds
+            CATransaction.commit()
         }
     }
 }
@@ -354,14 +417,14 @@ struct TransportBar: View {
     var body: some View {
         HStack(spacing: 10) {
             Button {
-                appState.currentTime = 0
+                appState.seek(to: 0)
             } label: {
                 Image(systemName: "backward.end.fill").font(.system(size: 11))
             }
             .buttonStyle(IconButtonStyle(size: 26))
 
             Button {
-                appState.isPlaying.toggle()
+                appState.togglePlayback()
             } label: {
                 ZStack {
                     Circle().fill(Theme.panel)
@@ -377,7 +440,7 @@ struct TransportBar: View {
             .buttonStyle(.plain)
 
             Button {
-                appState.currentTime = max(0, appState.currentTime - 1)
+                appState.seek(to: appState.currentTime - 1)
             } label: {
                 Image(systemName: "backward.frame.fill").font(.system(size: 11))
             }
@@ -418,9 +481,14 @@ struct TransportBar: View {
         .padding(.horizontal, 16)
         .frame(height: 40)
         .onReceive(ticker) { _ in
-            guard appState.isPlaying else { return }
+            // 有真实预览时由播放器驱动时间码；没有素材时退化为虚拟播放
+            guard appState.isPlaying, appState.previewPlayer == nil else { return }
             let next = appState.currentTime + 0.05
-            appState.currentTime = next > max(appState.totalDuration, 1) ? 0 : next
+            if next > max(appState.totalDuration, 1) {
+                appState.currentTime = 0
+            } else {
+                appState.currentTime = next
+            }
         }
     }
 }

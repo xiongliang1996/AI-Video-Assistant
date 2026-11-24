@@ -20,23 +20,28 @@ final class VideoExporter {
 
         await MainActor.run { progress(0.05, "正在合成轨道…") }
 
-        let composition = try await VideoEditor.shared.buildComposition(items: items)
+        let build = try await CompositionBuilder.build(items: items,
+                                                       renderSize: settings.resolution.size,
+                                                       fps: settings.fps)
 
         await MainActor.run { progress(0.2, "准备渲染参数…") }
 
-        let videoComposition = AVMutableVideoComposition()
-        videoComposition.renderSize = settings.resolution.size
-        videoComposition.frameDuration = CMTime(value: 1, timescale: CMTimeScale(max(1, settings.fps)))
-
         try? FileManager.default.removeItem(at: outputURL)
 
-        guard let session = AVAssetExportSession(asset: composition, presetName: settings.quality.preset) else {
+        guard let session = AVAssetExportSession(asset: build.composition,
+                                                 presetName: settings.quality.preset) else {
             throw VideoError.exportFailed("无法创建导出会话")
         }
 
         session.outputURL = outputURL
         session.outputFileType = settings.format.avFileType
         session.shouldOptimizeForNetworkUse = true
+        if let videoComposition = build.videoComposition {
+            session.videoComposition = videoComposition
+        }
+        if let audioMix = build.audioMix {
+            session.audioMix = audioMix
+        }
 
         // 进度轮询
         let timer = DispatchSource.makeTimerSource(queue: .main)

@@ -98,6 +98,9 @@ struct PropertiesPanel: View {
             infoRow("类型", item.type.label)
             infoRow("时长", String(format: "%.1f s", item.duration))
             infoRow("起点", formatTimecode(item.startTime))
+            if item.sourceStart > 0.01 {
+                infoRow("源入点", formatTimecode(item.sourceStart))
+            }
         }
     }
 
@@ -154,41 +157,76 @@ struct PropertiesPanel: View {
 
     private func effects(_ item: TimelineItem) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            groupHeader("sparkles", "效果")
+            groupHeader("sparkles", "转场")
 
             HStack(spacing: 8) {
-                Text("转场")
+                Text("类型")
                     .font(.system(size: 11.5))
                     .foregroundStyle(Theme.text2)
                     .frame(width: 52, alignment: .leading)
-                FieldBox {
-                    HStack {
-                        Text("交叉溶解").foregroundStyle(Theme.text)
-                        Spacer()
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 9))
-                            .foregroundStyle(Theme.text3)
+
+                Menu {
+                    ForEach(TransitionType.allCases, id: \.self) { type in
+                        Button {
+                            var copy = item
+                            copy.transition = type
+                            if type == .none { copy.transitionDuration = 0 }
+                            else if copy.transitionDuration <= 0 { copy.transitionDuration = 0.6 }
+                            appState.updateItem(copy)
+                        } label: {
+                            if item.transition == type {
+                                Label(type.label, systemImage: "checkmark")
+                            } else {
+                                Text(type.label)
+                            }
+                        }
+                    }
+                } label: {
+                    FieldBox {
+                        HStack(spacing: 5) {
+                            Image(systemName: item.transition.icon)
+                                .font(.system(size: 9.5))
+                                .foregroundStyle(item.transition == .none ? Theme.text3 : Theme.accent)
+                            Text(item.transition.label)
+                                .foregroundStyle(Theme.text)
+                                .lineLimit(1)
+                            Spacer(minLength: 0)
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 9))
+                                .foregroundStyle(Theme.text3)
+                        }
                     }
                 }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
             }
             .frame(height: 27)
 
-            HStack(spacing: 8) {
-                Text("滤镜")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(Theme.text2)
-                    .frame(width: 52, alignment: .leading)
-                FieldBox {
-                    HStack {
-                        Text("电影暖调").foregroundStyle(Theme.text)
-                        Spacer()
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 9))
-                            .foregroundStyle(Theme.text3)
-                    }
-                }
+            if item.transition != .none {
+                SliderRow(label: "过渡时长",
+                          value: Binding(
+                            get: { item.transitionDuration },
+                            set: { newValue in
+                                var copy = item
+                                copy.transitionDuration = newValue
+                                appState.updateItem(copy)
+                            }
+                          ),
+                          range: 0.15...1.5,
+                          display: String(format: "%.1f s", item.transitionDuration))
             }
-            .frame(height: 27)
+
+            groupHeader("circle.dotted", "淡入淡出")
+
+            SliderRow(label: "淡入",
+                      value: prop(item, \.fadeIn),
+                      range: 0...2,
+                      display: String(format: "%.1f s", item.properties.fadeIn))
+
+            SliderRow(label: "淡出",
+                      value: prop(item, \.fadeOut),
+                      range: 0...2,
+                      display: String(format: "%.1f s", item.properties.fadeOut))
         }
     }
 
