@@ -154,11 +154,14 @@ struct MediaPanel: View {
                               spacing: 8) {
                         ForEach(Array(appState.mediaLibrary.enumerated()), id: \.element.id) { index, asset in
                             MediaThumb(asset: asset, index: index)
+                                .mediaSkim(asset, cornerRadius: 7)
                                 .onTapGesture {
                                     appState.addToTimeline(asset)
                                 }
                                 .onDrag {
                                     NSItemProvider(contentsOf: asset.url) ?? NSItemProvider()
+                                } preview: {
+                                    MediaDragPreview(asset: asset, index: index)
                                 }
                                 .contextMenu {
                                     Button("加入时间线末尾") { appState.addToTimeline(asset) }

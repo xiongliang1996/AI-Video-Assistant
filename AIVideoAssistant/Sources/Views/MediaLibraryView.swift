@@ -190,5 +190,15 @@ struct LibraryCard: View {
                 .stroke(selected ? Theme.accent : Theme.line, lineWidth: selected ? 2 : 1)
         )
         .onHover { hovering = $0 }
+        .mediaSkim(asset, cornerRadius: 9)
+        .onDrag {
+            NSItemProvider(contentsOf: asset.url) ?? NSItemProvider()
+        } preview: {
+            MediaDragPreview(asset: asset, index: index)
+        }
+        .onTapGesture(count: 2) {
+            onAdd()
+        }
+        .help("\(asset.name) · \(asset.durationText)")
     }
 }

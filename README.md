@@ -18,7 +18,8 @@
 ### 编辑
 - 四轨时间线（V1 视频 / A1 音乐 / A2 配音 / S1 字幕），音频可上下拖动换层
 - **时间线拖拽**：拖动片段改位置，拖两端裁剪，自动吸附到相邻片段边缘 / 播放头 / 0 点
-- **素材拖入**：把素材面板里的文件直接拖到时间线任意轨道与落点，自动找最近的空位插入，同类轨道满了会顺延到下一层
+- **素材拖入**：把素材面板里的文件直接拖到时间线任意轨道与落点，自动找最近的空位插入，同类轨道满了会顺延到下一层；拖动时跟着鼠标的是带缩略图的小卡片，不是系统默认的文档图标
+- **悬停搓动预览**：鼠标在素材卡片上横向划过，画面跟着鼠标位置走（类似剪辑软件的 skim），底部有进度条、右上角有时间码；取帧异步执行，同一素材只保留最新一帧，鼠标快速划过不会堆过期请求
 - **真实波形**：读取音频采样（峰值 + RMS 混合）绘制包络，静音段与渐强段一眼可见；裁剪片段后包络跟着滑动，解码在后台线程并按文件缓存
 - **多选批量操作**：`⌘` 点击增减选择、`⌘A` 全选，选中多个片段可整组拖动 / 一次性删除，属性面板显示片段数、时间跨度与总长
 - **时间线缩略图**：视频片段按宽度平铺源文件画面（异步取帧、按「文件 + 时间」缓存），裁剪后缩略图跟着入点走
@@ -127,8 +128,8 @@ open dist/AI视频助手.app
         │   ├── AI/                 # OpenAI / TTS / 配置管理
         │   ├── Audio/              # 波形分析 + 停顿检测（RMS → dBFS）
         │   ├── ProjectStore.swift  # 项目读写
-        │   └── Video/              # CompositionBuilder / SubtitleRenderer / VideoExporter / ThumbnailStore / ExportQueue
-        └── Views/                  # 设计系统 + 五个界面（含 WaveformView / SmartCutView / ClipThumbnailStrip）
+        │   └── Video/              # CompositionBuilder / SubtitleRenderer / VideoExporter / ThumbnailStore / ExportQueue / HoverPreviewStore
+        └── Views/                  # 设计系统 + 五个界面（含 WaveformView / SmartCutView / ClipThumbnailStrip / MediaHoverPreview）
 ```
 
 ### 架构
@@ -189,6 +190,7 @@ open dist/AI视频助手.app
 - [x] 转场区间叠加关键帧（逐段计算转场进度 × 关键帧值）
 - [x] 修复左滑推入转场中段黑屏（位移用错了坐标系）
 - [x] 转场生效诊断 + 一键吸附（相邻 / 素材余量 / 重叠时长 5 类原因）
+- [x] 素材悬停搓动预览 + 拖拽缩略图
 - [ ] Sora 视频生成接入（等待 API 开放）
 
 ---
