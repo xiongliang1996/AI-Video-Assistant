@@ -480,6 +480,32 @@ struct PropertiesPanel: View {
                             Text(String(format: "%.2f%@", frame.value, property.unit))
                                 .font(.system(size: 10.5, design: .monospaced))
                                 .foregroundStyle(Theme.text3)
+                            // 这个关键帧到下一个关键帧的补间方式
+                            Menu {
+                                ForEach(Easing.allCases) { option in
+                                    Button {
+                                        updateEasing(item: item, property: property,
+                                                     frameID: frame.id, easing: option)
+                                    } label: {
+                                        Label(option.label, systemImage: option.icon)
+                                    }
+                                }
+                            } label: {
+                                Text(frame.easing == .linear ? "线性" : frame.easing.label)
+                                    .font(.system(size: 9.5))
+                                    .foregroundStyle(frame.easing == .linear ? Theme.text3 : Theme.accent)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1.5)
+                                    .background(
+                                        Capsule().fill(frame.easing == .linear
+                                                       ? Color.black.opacity(0.05)
+                                                       : Theme.accentSoft)
+                                    )
+                            }
+                            .menuStyle(.borderlessButton)
+                            .menuIndicator(.hidden)
+                            .fixedSize()
+                            .help("这个关键帧到下一个关键帧的补间方式")
                             Spacer()
                             Button {
                                 appState.seek(to: item.startTime + frame.time)
@@ -571,6 +597,19 @@ struct PropertiesPanel: View {
         copy.properties.setKeyframes(list, for: property)
         appState.updateItem(copy, recordUndo: true)
         appState.notify("已在 \(String(format: "%.2f", time))s 记录\(property.label)关键帧")
+    }
+
+    private func updateEasing(item: TimelineItem,
+                              property: AnimatableProperty,
+                              frameID: UUID,
+                              easing: Easing) {
+        var list = item.properties.keyframes(for: property)
+        guard let index = list.firstIndex(where: { $0.id == frameID }) else { return }
+        list[index].easing = easing
+        var copy = item
+        copy.properties.setKeyframes(list, for: property)
+        appState.updateItem(copy, recordUndo: true)
+        appState.notify("补间改为「\(easing.label)」")
     }
 
     private func availableProperties(for item: TimelineItem) -> [AnimatableProperty] {

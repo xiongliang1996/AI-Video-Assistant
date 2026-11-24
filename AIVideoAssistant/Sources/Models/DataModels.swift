@@ -233,15 +233,68 @@ enum TransitionType: String, Codable, CaseIterable, Hashable {
     }
 }
 
+/// 关键帧之间的补间方式
+enum Easing: String, Codable, CaseIterable, Identifiable {
+    case linear, easeIn, easeOut, easeInOut
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .linear: return "线性"
+        case .easeIn: return "缓入"
+        case .easeOut: return "缓出"
+        case .easeInOut: return "缓入缓出"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .linear: return "line.diagonal"
+        case .easeIn: return "chart.line.uptrend.xyaxis"
+        case .easeOut: return "chart.line.downtrend.xyaxis"
+        case .easeInOut: return "point.topleft.down.to.point.bottomright.curvepath"
+        }
+    }
+
+    /// 把 0…1 的线性进度映射成缓动后的进度
+    func apply(_ t: Double) -> Double {
+        let x = min(1, max(0, t))
+        switch self {
+        case .linear: return x
+        case .easeIn: return x * x
+        case .easeOut: return 1 - (1 - x) * (1 - x)
+        case .easeInOut:
+            return x < 0.5 ? 2 * x * x : 1 - 2 * (1 - x) * (1 - x)
+        }
+    }
+}
+
 /// 一个关键帧：时间相对片段起点（秒），值为该属性的取值
+/// easing 描述「从这个关键帧到下一个」的补间方式
 struct Keyframe: Codable, Hashable, Identifiable {
     var id: UUID = UUID()
     var time: Double
     var value: Double
+    var easing: Easing = .linear
 
-    init(time: Double, value: Double) {
+    init(time: Double, value: Double, easing: Easing = .linear) {
         self.time = max(0, time)
         self.value = value
+        self.easing = easing
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, time, value, easing
+    }
+
+    // 旧存档没有 easing 字段，回落线性
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        time = try c.decodeIfPresent(Double.self, forKey: .time) ?? 0
+        value = try c.decodeIfPresent(Double.self, forKey: .value) ?? 0
+        easing = try c.decodeIfPresent(Easing.self, forKey: .easing) ?? .linear
     }
 }
 
@@ -368,23 +421,46 @@ struct ItemProperties: Codable, Hashable {
             if time >= a.time && time <= b.time {
                 let span = b.time - a.time
                 guard span > 0.0001 else { return b.value }
-                let ratio = (time - a.time) / span
+                // 缓动由「起点关键帧」决定，作用到这一段的进度上
+                let ratio = a.easing.apply((time - a.time) / span)
                 return a.value + (b.value - a.value) * ratio
             }
         }
         return last.value
     }
 
-    /// 生成渲染用的采样点：片段起点、每个关键帧、片段终点（去重后按时间排序）
+    /// 生成渲染用的采样点：片段起点、每个关键帧、片段终点
+    /// AVFoundation 的 ramp 只能线性，所以缓动段要拆成若干小段来逼近曲线
     /// - Returns: [(相对片段时间, 值)]
     func animationSamples(_ property: AnimatableProperty, duration: Double) -> [(time: Double, value: Double)] {
         let list = keyframes(for: property).filter { $0.time <= duration + 0.001 }
         guard !list.isEmpty else { return [] }
-        var points: [(time: Double, value: Double)] = [(0, animatedValue(property, at: 0))]
+
+        // 先把「关键帧 + 首尾」整理成基础节点
+        var nodes: [(time: Double, value: Double, easing: Easing)] = [(0, animatedValue(property, at: 0), list.first?.easing ?? .linear)]
         for frame in list where frame.time > 0.001 && frame.time < duration - 0.001 {
-            points.append((frame.time, frame.value))
+            nodes.append((frame.time, frame.value, frame.easing))
         }
-        points.append((duration, animatedValue(property, at: duration)))
+        nodes.append((duration, animatedValue(property, at: duration), .linear))
+
+        // 缓动段再细分：每 0.06 s 一个点，最多 24 段
+        var points: [(time: Double, value: Double)] = []
+        for index in 0..<(nodes.count - 1) {
+            let a = nodes[index]
+            let b = nodes[index + 1]
+            points.append((a.time, a.value))
+            let span = b.time - a.time
+            guard span > 0.001, a.easing != .linear else { continue }
+            let steps = min(24, max(2, Int((span / 0.06).rounded())))
+            for step in 1..<steps {
+                let ratio = Double(step) / Double(steps)
+                let eased = a.easing.apply(ratio)
+                points.append((a.time + span * ratio, a.value + (b.value - a.value) * eased))
+            }
+        }
+        if let last = nodes.last {
+            points.append((last.time, last.value))
+        }
         return points
     }
 }
