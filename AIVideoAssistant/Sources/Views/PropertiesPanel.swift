@@ -319,8 +319,14 @@ struct PropertiesPanel: View {
     /// 转场能不能生效，直接在面板里说清楚，别让人以为是渲染坏了
     @ViewBuilder
     private func transitionStatusRow(_ item: TimelineItem) -> some View {
-        let status = appState.transitionStatus(for: item)
+        // 转场只作用于视频轨，音频 / 字幕轨不显示诊断（它们的转场本来就不参与合成）
+        if item.trackKind == .video {
+            transitionStatusBody(appState.transitionStatus(for: item), item: item)
+        }
+    }
 
+    @ViewBuilder
+    private func transitionStatusBody(_ status: TransitionStatus, item: TimelineItem) -> some View {
         if status.isProblem {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .top, spacing: 6) {
