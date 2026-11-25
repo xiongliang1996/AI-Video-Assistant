@@ -5,6 +5,7 @@
 
 import SwiftUI
 import AppKit
+import AVFoundation
 import UniformTypeIdentifiers
 
 struct SubtitleView: View {
@@ -16,6 +17,8 @@ struct SubtitleView: View {
     @State private var subtitles: [SubtitleEntry] = []
     @State private var isRecognizing = false
     @State private var errorText: String?
+    /// 识别完成后的一句话交代（用了词级时间戳 / 拆了几条）
+    @State private var recognizeNote: String?
     @State private var fontSize: Double = 28
     @State private var textColor = 0
 
@@ -51,7 +54,9 @@ struct SubtitleView: View {
          report: SubtitleAligner.Report? = nil,
          selectedIndex: Int? = nil,
          timelineClip: TimelineItem? = nil,
-         analysis: SpeechAnalysis? = nil) {
+         analysis: SpeechAnalysis? = nil,
+         mode: Int = 0,
+         note: String? = nil) {
         _source = State(initialValue: initialSource)
         _scriptText = State(initialValue: script)
         _videoURL = State(initialValue: timelineClip.flatMap { $0.assetURL } ?? mediaURL)
@@ -60,6 +65,8 @@ struct SubtitleView: View {
         _timingBaseline = State(initialValue: subtitles.isEmpty ? nil : subtitles)
         _timelineClipID = State(initialValue: timelineClip?.id)
         _lastAnalysis = State(initialValue: analysis)
+        _mode = State(initialValue: mode)
+        _recognizeNote = State(initialValue: note)
         if let selectedIndex, subtitles.indices.contains(selectedIndex) {
             _selectedSubtitleID = State(initialValue: subtitles[selectedIndex].id)
         }
@@ -302,6 +309,12 @@ struct SubtitleView: View {
                 SegmentedControl(options: [0, 1],
                                  title: { $0 == 0 ? "整句" : "逐字" },
                                  selection: $mode)
+                Text(mode == 0
+                     ? "按标点和长度断句，每条都卡在真实发音上"
+                     : "一个词一条，适合做卡拉 OK 式逐字字幕")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(Theme.text3)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Button {
@@ -318,6 +331,13 @@ struct SubtitleView: View {
             }
             .buttonStyle(PrimaryButtonStyle(height: 34, fullWidth: true))
             .disabled(videoURL == nil || isRecognizing)
+
+            if let recognizeNote {
+                Text(recognizeNote)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.text3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             if let errorText {
                 Text(errorText)
@@ -925,6 +945,12 @@ struct SubtitleView: View {
         guard let videoURL else { return }
         isRecognizing = true
         errorText = nil
+        recognizeNote = nil
+
+        // 时间线片段：识别完要把文件时间映射成时间线时间
+        let clip = selectedClip
+        let clipRange = clip.map { (start: $0.startTime, source: $0.sourceStart, duration: $0.duration) }
+        let granularity: WhisperAlignment.Granularity = mode == 0 ? .sentence : .word
 
         Task {
             do {
@@ -932,17 +958,48 @@ struct SubtitleView: View {
                     .appendingPathComponent("whisper-\(UUID().uuidString).m4a")
                 try await VideoEditor.shared.extractAudio(from: videoURL, to: audioURL)
 
+                let audioDuration = (try? await AVURLAsset(url: audioURL).load(.duration))
+                    .map(CMTimeGetSeconds) ?? 0
+
                 let service = OpenAIService(config: appState.aiConfig)
-                let srt = try await service.transcribe(audioURL: audioURL,
-                                                       language: language.isEmpty ? nil : language)
-                let entries = SubtitleParser.parseSRT(srt)
+                // 词级时间戳总是要：整句模式下也靠它算准每条的真实起止
+                let transcript = try await service.transcribe(audioURL: audioURL,
+                                                              language: language.isEmpty ? nil : language,
+                                                              wordTimestamps: true)
                 try? FileManager.default.removeItem(at: audioURL)
+
+                var entries: [SubtitleEntry]
+                if transcript.words.isEmpty {
+                    // 服务端没给词级时间戳：退回句级 + 重新断句
+                    entries = WhisperAlignment.refine(transcript.segments)
+                } else {
+                    entries = WhisperAlignment.cues(from: transcript.words, granularity: granularity)
+                }
+                if entries.isEmpty { entries = transcript.segments }
+
+                if let clipRange {
+                    entries = WhisperAlignment.remap(entries,
+                                                     clipStart: clipRange.start,
+                                                     sourceStart: clipRange.source,
+                                                     duration: clipRange.duration)
+                }
+
+                let limit = clipRange.map { $0.start + $0.duration } ?? audioDuration
+                if limit > 0 {
+                    entries = SubtitleTiming.sanitized(entries, total: limit)
+                }
+
+                let note = recognizeSummary(entries: entries,
+                                            transcript: transcript,
+                                            granularity: granularity)
 
                 await MainActor.run {
                     subtitles = entries
                     timingBaseline = entries
                     selectedSubtitleID = nil
+                    lastAnalysis = nil
                     isRecognizing = false
+                    recognizeNote = note
                     appState.notify("识别完成，共 \(entries.count) 条字幕")
                 }
             } catch {
@@ -952,6 +1009,23 @@ struct SubtitleView: View {
                 }
             }
         }
+    }
+
+    /// 识别结果的一句话交代：用了什么时间戳、拆了多少条
+    private func recognizeSummary(entries: [SubtitleEntry],
+                                  transcript: WhisperTranscript,
+                                  granularity: WhisperAlignment.Granularity) -> String {
+        var parts: [String] = ["\(entries.count) 条字幕"]
+        if transcript.words.isEmpty {
+            parts.append("服务端没给词级时间戳，按句级重新断句")
+        } else {
+            parts.append("词级时间戳 \(transcript.words.count) 个")
+            parts.append(granularity == .word ? "逐字" : "整句")
+        }
+        if let clip = selectedClip {
+            parts.append("已按片段 \(SubtitleTiming.compact(clip.startTime)) 换算")
+        }
+        return parts.joined(separator: " · ")
     }
 
     private func exportSRT() {

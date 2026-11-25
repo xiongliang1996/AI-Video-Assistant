@@ -56,11 +56,39 @@ final class OpenAIService: VideoGeneratingService {
 
     // MARK: - 语音识别
 
-    func transcribe(audioURL: URL, language: String?) async throws -> String {
+    /// 语音识别。优先要 `verbose_json` + 词级时间戳——字幕拆句后每条的时间
+    /// 都来自真实发音，不用按字数估。服务端不认这个格式（常见于兼容代理）时
+    /// 自动退回 SRT，保证老接口也能用。
+    func transcribe(audioURL: URL,
+                    language: String?,
+                    wordTimestamps: Bool = true) async throws -> WhisperTranscript {
         guard !config.openAIKey.isEmpty else {
             throw AIError.missingAPIKey("OpenAI")
         }
 
+        do {
+            let raw = try await uploadTranscription(audioURL: audioURL,
+                                                    language: language,
+                                                    responseFormat: "verbose_json",
+                                                    wordTimestamps: wordTimestamps)
+            let transcript = WhisperTranscript.parse(raw)
+            guard !transcript.isEmpty else { throw AIError.invalidResponse }
+            return transcript
+        } catch {
+            let srt = try await uploadTranscription(audioURL: audioURL,
+                                                    language: language,
+                                                    responseFormat: "srt",
+                                                    wordTimestamps: false)
+            let transcript = WhisperTranscript.parse(srt)
+            guard !transcript.isEmpty else { throw error }
+            return transcript
+        }
+    }
+
+    private func uploadTranscription(audioURL: URL,
+                                     language: String?,
+                                     responseFormat: String,
+                                     wordTimestamps: Bool) async throws -> String {
         let endpoint = baseURL + "/audio/transcriptions"
         let model = config.whisperModel
 
@@ -69,9 +97,13 @@ final class OpenAIService: VideoGeneratingService {
                 multipartFormData: { form in
                     form.append(audioURL, withName: "file", fileName: audioURL.lastPathComponent, mimeType: "audio/m4a")
                     form.append(Data(model.utf8), withName: "model")
-                    form.append(Data("srt".utf8), withName: "response_format")
+                    form.append(Data(responseFormat.utf8), withName: "response_format")
                     if let language, !language.isEmpty {
                         form.append(Data(language.utf8), withName: "language")
+                    }
+                    if wordTimestamps {
+                        form.append(Data("word".utf8), withName: "timestamp_granularities[]")
+                        form.append(Data("segment".utf8), withName: "timestamp_granularities[]")
                     }
                 },
                 to: endpoint,
