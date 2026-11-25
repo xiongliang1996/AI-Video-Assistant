@@ -355,6 +355,40 @@ enum SubtitleAligner {
         }
     }
 
+    // MARK: 时间线片段 → 时间线时间
+
+    /// 把「音频文件内的时间」映射成「时间线上的时间」。
+    ///
+    /// 时间线上的音频片段可能被裁过（`sourceStart`），也可能不从 0 秒开始（`startTime`），
+    /// 所以只保留 `[sourceStart, sourceStart + duration)` 这一段语音，再整体平移到片段位置。
+    /// 裁掉的头部/尾部里如果有语音，字幕就不该出现在那里。
+    static func remap(_ analysis: SpeechAnalysis,
+                      clipStart: Double,
+                      sourceStart: Double,
+                      duration: Double) -> SpeechAnalysis {
+        let length = max(0, duration)
+        guard length > 0 else { return SpeechAnalysis() }
+        let origin = max(0, sourceStart)
+        let lower = origin
+        let upper = origin + length
+        let base = max(0, clipStart)
+
+        func mapped(_ ranges: [ClosedRange<Double>]) -> [ClosedRange<Double>] {
+            ranges.compactMap { range in
+                let from = max(range.lowerBound, lower)
+                let to = min(range.upperBound, upper)
+                guard to - from > 0.02 else { return nil }
+                let start = base + (from - origin)
+                return start...(start + (to - from))
+            }
+        }
+
+        var result = SpeechAnalysis(duration: base + length)
+        result.speech = mapped(analysis.speech)
+        result.silences = mapped(analysis.silences)
+        return result
+    }
+
     // MARK: 压缩轴 → 真实时间
 
     /// x 是「把所有语音区间首尾相接」后的坐标，映射回真实时间

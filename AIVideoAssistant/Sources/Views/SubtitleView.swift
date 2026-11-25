@@ -29,6 +29,15 @@ struct SubtitleView: View {
     @State private var alignReport: SubtitleAligner.Report?
     @State private var alignNote: String?
 
+    /// 选了时间线上的某个音频片段当配音（有值时优先于手动选的文件）
+    @State private var timelineClipID: UUID?
+    /// 当前在列表里选中的字幕条
+    @State private var selectedSubtitleID: UUID?
+    /// 对齐出来的原始时间，用于「复原」
+    @State private var timingBaseline: [SubtitleEntry]?
+    /// 拖动开始时的快照，避免连续 onChanged 累积误差
+    @State private var dragBase: [SubtitleEntry]?
+
     private let colors: [Color] = [.white, Color(hex: 0xFFD166), Color(hex: 0x7C6BFF), Color(hex: 0x12B76A)]
     private let colorHexes: [Int] = [0xFFFFFF, 0xFFD166, 0x7C6BFF, 0x12B76A]
 
@@ -37,12 +46,19 @@ struct SubtitleView: View {
          script: String = "",
          mediaURL: URL? = nil,
          subtitles: [SubtitleEntry] = [],
-         report: SubtitleAligner.Report? = nil) {
+         report: SubtitleAligner.Report? = nil,
+         selectedIndex: Int? = nil,
+         timelineClip: TimelineItem? = nil) {
         _source = State(initialValue: initialSource)
         _scriptText = State(initialValue: script)
-        _videoURL = State(initialValue: mediaURL)
+        _videoURL = State(initialValue: timelineClip.flatMap { $0.assetURL } ?? mediaURL)
         _subtitles = State(initialValue: subtitles)
         _alignReport = State(initialValue: report)
+        _timingBaseline = State(initialValue: subtitles.isEmpty ? nil : subtitles)
+        _timelineClipID = State(initialValue: timelineClip?.id)
+        if let selectedIndex, subtitles.indices.contains(selectedIndex) {
+            _selectedSubtitleID = State(initialValue: subtitles[selectedIndex].id)
+        }
     }
 
     var body: some View {
@@ -152,29 +168,88 @@ struct SubtitleView: View {
                             RoundedRectangle(cornerRadius: 6)
                                 .fill(Theme.thumb(videoURL.lastPathComponent.hashValue))
                                 .frame(width: 28, height: 28)
-                                .overlay(Image(systemName: "film")
+                                .overlay(Image(systemName: selectedClip == nil ? "film" : "waveform")
                                     .font(.system(size: 11))
                                     .foregroundStyle(.white))
                             VStack(alignment: .leading, spacing: 1) {
-                                Text(videoURL.lastPathComponent)
+                                Text(selectedClip?.name ?? videoURL.lastPathComponent)
                                     .font(.system(size: 11.5, weight: .medium))
                                     .lineLimit(1)
-                                Text("已选择")
+                                Text(selectedClip.map {
+                                    "时间线 \(SubtitleTiming.compact($0.startTime)) → \(SubtitleTiming.compact($0.endTime))"
+                                } ?? "已选择")
                                     .font(.system(size: 10))
                                     .foregroundStyle(Theme.text3)
+                                    .lineLimit(1)
                             }
-                            Spacer()
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(.system(size: 11))
-                                .foregroundStyle(Theme.ok)
+                            Spacer(minLength: 4)
+                            Button {
+                                clearSource()
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(Theme.text3)
+                            }
+                            .buttonStyle(.plain)
+                            .help("清除选择")
                         }
                         .padding(8)
                         .background(RoundedRectangle(cornerRadius: 8).fill(Theme.accentSoft))
+                    }
+
+                    // 配音已经在时间线上时，不用再选一次文件
+                    if source == 1 {
+                        timelinePickRow
                     }
                 }
                 .padding(12)
             }
         }
+    }
+
+    /// 时间线上已有的音频片段，点一下直接当配音
+    private var timelinePickRow: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 5) {
+                Image(systemName: "waveform")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(Theme.accent)
+                Text("时间线配音")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.text3)
+                Spacer(minLength: 4)
+                if !appState.audioClips.isEmpty {
+                    Text("\(appState.audioClips.count) 段")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(Theme.text3)
+                }
+            }
+            if appState.audioClips.isEmpty {
+                Text("时间线上还没有音频片段，先把配音拖到音频轨")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.text3)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(appState.audioClips) { clip in
+                            Chip(text: chipTitle(clip),
+                                 icon: "waveform",
+                                 selected: timelineClipID == clip.id) {
+                                useTimelineClip(clip)
+                            }
+                            .help("\(clip.name) · 时间线 \(SubtitleTiming.compact(clip.startTime)) 起")
+                        }
+                    }
+                    .padding(.vertical, 1)
+                }
+            }
+        }
+    }
+
+    private func chipTitle(_ clip: TimelineItem) -> String {
+        let name = clip.name.count > 9 ? String(clip.name.prefix(9)) + "…" : clip.name
+        return "\(name) \(SubtitleTiming.compact(clip.startTime))"
     }
 
     private var settingsCard: some View {
@@ -324,7 +399,7 @@ struct SubtitleView: View {
             .disabled(scriptText.isEmpty || videoURL == nil || isAligning)
 
             if videoURL == nil {
-                Text("先选一段配音（或带音轨的视频），才能按停顿对齐")
+                Text("先选一段配音（或从时间线挑一个音频片段），才能按停顿对齐")
                     .font(.system(size: 10))
                     .foregroundStyle(Theme.text3)
                     .fixedSize(horizontal: false, vertical: true)
@@ -454,41 +529,18 @@ struct SubtitleView: View {
                                   : "选配音、粘文稿，然后点「断句并对齐」")
                 } else {
                     ScrollView {
-                        VStack(spacing: 0) {
+                        LazyVStack(spacing: 0) {
                             ForEach(Array(subtitles.enumerated()), id: \.element.id) { index, entry in
-                                HStack(alignment: .top, spacing: 10) {
-                                    Text("\(index + 1)")
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(Theme.text3)
-                                        .frame(width: 18, alignment: .leading)
-                                        .padding(.top, 2)
-                                    Text(entry.timecode)
-                                        .font(.system(size: 10.5, weight: .medium))
-                                        .monospacedDigit()
-                                        .foregroundStyle(Theme.accent)
-                                        .frame(width: 92, alignment: .leading)
-                                        .padding(.top, 1)
-                                    TextField("字幕内容", text: Binding(
-                                        get: { subtitles[index].text },
-                                        set: { subtitles[index].text = $0 }
-                                    ))
-                                    .textFieldStyle(.plain)
-                                    .font(.system(size: 12))
-                                    Button {
-                                        appState.currentTime = entry.startTime
-                                    } label: {
-                                        Image(systemName: "play.circle")
-                                            .font(.system(size: 12))
-                                    }
-                                    .buttonStyle(.plain)
-                                    .foregroundStyle(Theme.text3)
-                                }
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 7)
+                                subtitleRow(index: index, entry: entry)
                             }
                         }
                         .padding(.vertical, 4)
                     }
+                }
+
+                if let index = selectedSubtitleIndex {
+                    timingBar(index: index)
+                        .overlay(alignment: .top) { Rectangle().fill(Theme.line).frame(height: 1) }
                 }
 
                 HStack {
@@ -514,7 +566,195 @@ struct SubtitleView: View {
         }
     }
 
+    // MARK: - 字幕行与微调
+
+    private var selectedSubtitleIndex: Int? {
+        guard let id = selectedSubtitleID else { return nil }
+        return subtitles.firstIndex { $0.id == id }
+    }
+
+    /// 时间线总长度（不算字幕本身，否则最后一条永远没法往后拉）
+    private var timelineTotal: Double {
+        appState.timeline
+            .filter { $0.type != .subtitle && $0.type != .text }
+            .map(\.endTime)
+            .max() ?? 0
+    }
+
+    private func subtitleRow(index: Int, entry: SubtitleEntry) -> some View {
+        let isSelected = selectedSubtitleID == entry.id
+        return HStack(alignment: .top, spacing: 10) {
+            Text("\(index + 1)")
+                .font(.system(size: 10))
+                .foregroundStyle(isSelected ? Theme.accent : Theme.text3)
+                .frame(width: 18, alignment: .leading)
+                .padding(.top, 2)
+
+            // 时间码本身就是拖动把手：点一下选中，左右拖动整体平移
+            Text(SubtitleTiming.label(entry))
+                .font(.system(size: 10.5, weight: .medium))
+                .monospacedDigit()
+                .foregroundStyle(isSelected ? Theme.accent : Theme.text2)
+                .frame(width: 104, alignment: .leading)
+                .padding(.top, 1)
+                .contentShape(Rectangle())
+                .gesture(timeDrag(entry))
+                .help("左右拖动整体平移；点一下选中，可在下方按 0.1 秒微调")
+
+            TextField("字幕内容", text: Binding(
+                get: { subtitles.indices.contains(index) ? subtitles[index].text : "" },
+                set: { if subtitles.indices.contains(index) { subtitles[index].text = $0 } }
+            ))
+            .textFieldStyle(.plain)
+            .font(.system(size: 12))
+
+            Button {
+                appState.currentTime = entry.startTime
+            } label: {
+                Image(systemName: "play.circle")
+                    .font(.system(size: 12))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.text3)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(isSelected ? Theme.accentSoft.opacity(0.55) : Color.clear)
+    }
+
+    private func timeDrag(_ entry: SubtitleEntry) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                if dragBase == nil {
+                    dragBase = subtitles
+                    selectedSubtitleID = entry.id
+                }
+                guard let base = dragBase,
+                      let index = base.firstIndex(where: { $0.id == entry.id }) else { return }
+                // 拖多少点 → 多少秒，按 0.05 秒取整，避免出现 1.7300000000000002
+                let delta = SubtitleTiming.delta(pixels: value.translation.width, step: 0.05)
+                let moved = SubtitleTiming.shift(base, at: index, by: delta, total: timelineTotal)
+                if moved != subtitles { subtitles = moved }
+            }
+            .onEnded { _ in dragBase = nil }
+    }
+
+    private func timingBar(index: Int) -> some View {
+        let entry = subtitles[index]
+        return VStack(spacing: 7) {
+            HStack(spacing: 6) {
+                Text("第 \(index + 1) 条")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(Theme.text2)
+                Text(SubtitleTiming.label(entry))
+                    .font(.system(size: 10.5))
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.accent)
+                Text(String(format: "%.2f 秒", SubtitleTiming.duration(entry)))
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(Theme.text3)
+                Spacer(minLength: 4)
+                if let baseline = timingBaseline,
+                   SubtitleTiming.isModified(subtitles, from: baseline) {
+                    Button {
+                        subtitles = SubtitleTiming.restoreTimes(subtitles, from: baseline)
+                    } label: {
+                        Text("复原对齐")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Theme.accent)
+                    }
+                    .buttonStyle(.plain)
+                    .help("时间恢复成刚对齐完的样子，文本保留")
+                }
+                Button {
+                    selectedSubtitleID = nil
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Theme.text3)
+                }
+                .buttonStyle(.plain)
+                .help("收起微调")
+            }
+
+            HStack(spacing: 6) {
+                timingButton("◀ 前移", "整体前移 0.1 秒") {
+                    subtitles = SubtitleTiming.shift(subtitles, at: index,
+                                                     by: -SubtitleTiming.step, total: timelineTotal)
+                }
+                timingButton("后移 ▶", "整体后移 0.1 秒") {
+                    subtitles = SubtitleTiming.shift(subtitles, at: index,
+                                                     by: SubtitleTiming.step, total: timelineTotal)
+                }
+                Rectangle()
+                    .fill(Theme.line)
+                    .frame(width: 1, height: 14)
+                    .padding(.horizontal, 1)
+                timingButton("缩短", "结尾提前 0.1 秒") {
+                    subtitles = SubtitleTiming.resizeEnd(subtitles, at: index,
+                                                         by: -SubtitleTiming.step, total: timelineTotal)
+                }
+                timingButton("加长", "结尾延后 0.1 秒") {
+                    subtitles = SubtitleTiming.resizeEnd(subtitles, at: index,
+                                                         by: SubtitleTiming.step, total: timelineTotal)
+                }
+                Spacer(minLength: 0)
+                Text(SubtitleTiming.roomLabel(subtitles, at: index, total: timelineTotal))
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(Theme.text3)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Theme.panel.opacity(0.55))
+    }
+
+    private func timingButton(_ title: String, _ help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 10.5))
+        }
+        .buttonStyle(SoftButtonStyle(height: 24))
+        .help(help)
+    }
+
     // MARK: - 动作
+
+    private var selectedClip: TimelineItem? {
+        guard let id = timelineClipID else { return nil }
+        return appState.timeline.first { $0.id == id }
+    }
+
+    private func clearSource() {
+        videoURL = nil
+        timelineClipID = nil
+        alignReport = nil
+        alignNote = nil
+    }
+
+    /// 选时间线上的片段当配音：文件还是那个文件，只是字幕要对齐到它在时间线上的位置
+    private func useTimelineClip(_ clip: TimelineItem) {
+        guard let url = clipURL(clip) else {
+            alignNote = "这个片段的文件找不到了：\(clip.name)"
+            return
+        }
+        timelineClipID = clip.id
+        videoURL = url
+        alignReport = nil
+        alignNote = nil
+    }
+
+    private func clipURL(_ clip: TimelineItem) -> URL? {
+        if let url = clip.assetURL, FileManager.default.fileExists(atPath: url.path) {
+            return url
+        }
+        if let id = clip.assetID,
+           let asset = appState.mediaLibrary.first(where: { $0.id == id }) {
+            return asset.url
+        }
+        return clip.assetURL
+    }
 
     private func pickVideo() {
         let panel = NSOpenPanel()
@@ -524,6 +764,8 @@ struct SubtitleView: View {
         panel.canChooseDirectories = false
         if panel.runModal() == .OK {
             videoURL = panel.url
+            // 手动选了文件就不再跟时间线上的片段走
+            timelineClipID = nil
             alignReport = nil
             alignNote = nil
         }
@@ -556,6 +798,10 @@ struct SubtitleView: View {
         alignReport = nil
         errorText = nil
 
+        // 时间线片段：分析完要把文件时间映射成时间线时间
+        let clip = selectedClip
+        let clipRange = clip.map { (start: $0.startTime, source: $0.sourceStart, duration: $0.duration) }
+
         Task {
             // 视频要先抽出音轨才能分析停顿
             var target = videoURL
@@ -577,17 +823,26 @@ struct SubtitleView: View {
             }
 
             // 分析整段音频要几百毫秒到几秒，放后台
-            let analysis = await Task.detached(priority: .userInitiated) {
+            let raw = await Task.detached(priority: .userInitiated) {
                 SilenceDetector.analyze(url: target) ?? SpeechAnalysis()
             }.value
 
             if let temporary { try? FileManager.default.removeItem(at: temporary) }
+
+            let analysis = clipRange.map {
+                SubtitleAligner.remap(raw,
+                                      clipStart: $0.start,
+                                      sourceStart: $0.source,
+                                      duration: $0.duration)
+            } ?? raw
 
             let entries = SubtitleAligner.align(lines: lines, analysis: analysis)
             let report = SubtitleAligner.report(lines: lines, entries: entries, analysis: analysis)
 
             await MainActor.run {
                 subtitles = entries
+                timingBaseline = entries
+                selectedSubtitleID = nil
                 alignReport = report
                 isAligning = false
                 appState.notify("已对齐 \(entries.count) 条字幕")
@@ -614,6 +869,8 @@ struct SubtitleView: View {
 
                 await MainActor.run {
                     subtitles = entries
+                    timingBaseline = entries
+                    selectedSubtitleID = nil
                     isRecognizing = false
                     appState.notify("识别完成，共 \(entries.count) 条字幕")
                 }
