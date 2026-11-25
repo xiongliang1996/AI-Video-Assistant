@@ -59,7 +59,17 @@ struct MediaLibraryView: View {
     }
 
     private var sections: [MediaSection] {
-        MediaShelf.sections(visible, grouped: grouped)
+        MediaShelf.sections(visible, grouped: effectiveGrouped)
+    }
+
+    /// 「集合顺序」靠拖动卡片维护，分组会把落点打乱，所以这时强制平铺
+    private var effectiveGrouped: Bool {
+        query.sort == .manual && query.collectionID != nil ? false : grouped
+    }
+
+    /// 正在按集合顺序看（这时卡片可以拖动排序）
+    private var isManualOrder: Bool {
+        query.sort == .manual && query.collectionID != nil
     }
 
     private var unusedCount: Int {
@@ -99,7 +109,7 @@ struct MediaLibraryView: View {
             case .create(let preset):
                 CollectionNameSheet(title: "新建素材集合") { name in
                     let id = appState.createCollection(name: name, assetIDs: preset)
-                    query.collectionID = id
+                    selectCollection(id)
                     nameSheet = nil
                 } onCancel: {
                     nameSheet = nil
@@ -210,6 +220,7 @@ struct MediaLibraryView: View {
                         Text(sort.label)
                     }
                 }
+                .disabled(sort.needsCollection && query.collectionID == nil)
             }
         } label: {
             HStack(spacing: 5) {
@@ -232,7 +243,9 @@ struct MediaLibraryView: View {
         .menuIndicator(.hidden)
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .help("排序方式")
+        .help(query.collectionID == nil
+              ? "排序方式（选中一个集合后可以按集合顺序拖排）"
+              : "排序方式")
     }
 
     private var directionButton: some View {
@@ -252,11 +265,15 @@ struct MediaLibraryView: View {
         Button {
             grouped.toggle()
         } label: {
-            Image(systemName: grouped ? "rectangle.grid.1x2" : "square.grid.2x2")
+            Image(systemName: effectiveGrouped ? "rectangle.grid.1x2" : "square.grid.2x2")
                 .font(.system(size: 11.5))
         }
-        .buttonStyle(IconButtonStyle(active: grouped, size: 28))
-        .help(grouped ? "已按类型分组，点一下平铺" : "平铺显示，点一下按类型分组")
+        .buttonStyle(IconButtonStyle(active: effectiveGrouped, size: 28))
+        .disabled(isManualOrder)
+        .opacity(isManualOrder ? 0.35 : 1)
+        .help(isManualOrder
+              ? "按集合顺序排列时平铺显示，方便拖动排序"
+              : (grouped ? "已按类型分组，点一下平铺" : "平铺显示，点一下按类型分组"))
     }
 
     // MARK: - 集合行
@@ -278,11 +295,12 @@ struct MediaLibraryView: View {
                     .foregroundStyle(Theme.text3)
             } else {
                 ForEach(collectionInfos) { info in
-                    Chip(text: "\(info.name) \(info.count)",
-                         icon: "folder.fill",
-                         selected: query.collectionID == info.id) {
-                        query.collectionID = (query.collectionID == info.id) ? nil : info.id
-                    }
+                    CollectionChip(info: info,
+                                   selected: query.collectionID == info.id,
+                                   onTap: { selectCollection(query.collectionID == info.id ? nil : info.id) },
+                                   onDropURLs: { urls in
+                                       appState.addDroppedURLs(urls, toCollection: info.id)
+                                   })
                     .contextMenu {
                         Button("重命名…") {
                             nameSheet = NameSheetState(kind: .rename(info.id, info.name))
@@ -294,7 +312,7 @@ struct MediaLibraryView: View {
                         }
                         Divider()
                         Button("删除集合") {
-                            if query.collectionID == info.id { query.collectionID = nil }
+                            if query.collectionID == info.id { selectCollection(nil) }
                             appState.deleteCollection(info.id)
                         }
                     }
@@ -302,6 +320,16 @@ struct MediaLibraryView: View {
             }
 
             Spacer(minLength: 8)
+
+            if isManualOrder {
+                HStack(spacing: 3.5) {
+                    Image(systemName: "hand.draw")
+                        .font(.system(size: 9.5))
+                    Text("拖动卡片调整顺序")
+                        .font(.system(size: 10))
+                }
+                .foregroundStyle(Theme.text3)
+            }
 
             Button {
                 nameSheet = NameSheetState(kind: .create(selected))
@@ -439,10 +467,10 @@ struct MediaLibraryView: View {
         } else if visible.isEmpty {
             Card {
                 VStack(spacing: 10) {
-                    Image(systemName: "magnifyingglass")
+                    Image(systemName: isEmptyCollection ? "folder" : "magnifyingglass")
                         .font(.system(size: 26, weight: .light))
                         .foregroundStyle(Theme.text3)
-                    Text("没有匹配的素材")
+                    Text(isEmptyCollection ? "这个集合还是空的" : "没有匹配的素材")
                         .font(.system(size: 12))
                         .foregroundStyle(Theme.text2)
                     Text(emptyHintText)
@@ -451,7 +479,7 @@ struct MediaLibraryView: View {
                     Button {
                         resetFilters()
                     } label: {
-                        Text("清除筛选条件")
+                        Text(isEmptyCollection ? "看全部素材" : "清除筛选条件")
                             .font(.system(size: 11.5, weight: .medium))
                     }
                     .buttonStyle(SoftButtonStyle(height: 26))
@@ -488,7 +516,10 @@ struct MediaLibraryView: View {
                                     },
                                     onRemove: {
                                         appState.removeMedia(ids: [asset.id])
-                                    }
+                                    },
+                                    onDropReorder: isManualOrder ? { urls in
+                                        reorderDropped(urls, onto: asset.id)
+                                    } : nil
                                 )
                             }
                         }
@@ -499,11 +530,16 @@ struct MediaLibraryView: View {
         }
     }
 
+    /// 空集合和「筛选无结果」是两件事，空状态文案要分开
+    private var isEmptyCollection: Bool {
+        guard let collection = activeCollection else { return false }
+        return collection.assetIDs.isEmpty
+    }
+
     private var emptyHintText: String {
         // 空集合是最常见的「怎么什么都没有」，单独说清楚
-        if let collection = activeCollection, collection.assetIDs.isEmpty,
-           query.search.isEmpty, query.type == nil, !query.unusedOnly {
-            return "「\(collection.name)」还是空的，右键素材卡片就能加进来"
+        if isEmptyCollection, query.search.isEmpty, query.type == nil, !query.unusedOnly {
+            return "「\(activeCollection?.name ?? "这个集合")」还是空的 —— 右键素材卡片，或把卡片拖到集合胶囊上"
         }
         var parts: [String] = []
         if let collection = activeCollection { parts.append("集合「\(collection.name)」") }
@@ -541,11 +577,33 @@ struct MediaLibraryView: View {
         }
     }
 
+    /// 切换集合筛选。进集合默认切到「集合顺序」方便直接拖，退出时退回导入顺序
+    private func selectCollection(_ id: UUID?) {
+        let wasManual = query.sort == .manual
+        query.collectionID = id
+        if id != nil {
+            if query.sort == .added { query.sort = .manual }
+        } else if wasManual {
+            query.sort = .added
+        }
+    }
+
+    /// 把拖到某张卡片上的素材挪过去（整组保持相对顺序）
+    private func reorderDropped(_ urls: [URL], onto targetID: UUID) {
+        guard let collectionID = query.collectionID else { return }
+        let dropping = appState.assetIDs(forURLs: urls)
+        guard !dropping.isEmpty else {
+            appState.notify("这些文件还不在素材库里，先导入素材库再拖动排序")
+            return
+        }
+        appState.reorderCollection(collectionID, moving: dropping, over: targetID)
+    }
+
     private func resetFilters() {
         query.search = ""
         query.type = nil
         query.unusedOnly = false
-        query.collectionID = nil
+        selectCollection(nil)
     }
 }
 
@@ -564,6 +622,8 @@ struct LibraryCard: View {
     var onToggleCollection: (UUID) -> Void = { _ in }
     var onCreateCollection: () -> Void = {}
     var onRemove: () -> Void = {}
+    /// 「集合顺序」模式下，把素材拖到这张卡片上就是重排（nil = 不接受重排）
+    var onDropReorder: (([URL]) -> Void)? = nil
 
     @State private var hovering = false
 
@@ -642,6 +702,7 @@ struct LibraryCard: View {
         } preview: {
             MediaDragPreview(asset: asset, index: index)
         }
+        .modifier(ReorderDropModifier(onDropURLs: onDropReorder))
         .onTapGesture(count: 2) {
             onAdd()
         }
@@ -704,6 +765,9 @@ struct LibraryCard: View {
     private var helpText: String {
         var text = "\(asset.name) · \(metaText)"
         text += usageCount > 0 ? " · 时间线用了 \(usageCount) 次" : " · 未使用"
+        if onDropReorder != nil {
+            text += " · 拖到别的卡片上可以调整集合顺序"
+        }
         return text
     }
 }

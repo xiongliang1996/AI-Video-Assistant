@@ -11,6 +11,7 @@ import Foundation
 
 enum MediaSort: String, CaseIterable, Identifiable {
     case added
+    case manual
     case name
     case duration
     case type
@@ -20,6 +21,7 @@ enum MediaSort: String, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .added: return "导入顺序"
+        case .manual: return "集合顺序"
         case .name: return "名称"
         case .duration: return "时长"
         case .type: return "类型"
@@ -29,6 +31,7 @@ enum MediaSort: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .added: return "clock.arrow.circlepath"
+        case .manual: return "hand.draw"
         case .name: return "textformat.abc"
         case .duration: return "timer"
         case .type: return "square.grid.2x2"
@@ -37,6 +40,9 @@ enum MediaSort: String, CaseIterable, Identifiable {
 
     /// 「导入顺序」反着排就是最新在前，语义清楚，其余都允许双向
     var supportsDescending: Bool { self != .added }
+
+    /// 只有选中集合时才有意义
+    var needsCollection: Bool { self == .manual }
 }
 
 // MARK: - 查询条件
@@ -176,7 +182,10 @@ enum MediaShelf {
                       to assets: [MediaAsset],
                       usage: MediaUsage = .empty,
                       collections: [MediaCollection] = []) -> [MediaAsset] {
-        let members = memberIDs(query.collectionID, in: collections)
+        let collection = query.collectionID.flatMap { id in
+            collections.first { $0.id == id }
+        }
+        let members = collection.map { Set($0.assetIDs) }
         let result = assets.filter { asset in
             guard matches(asset, keywords: query.keywords) else { return false }
             if let type = query.type, asset.type != type { return false }
@@ -184,7 +193,29 @@ enum MediaShelf {
             if let members, !members.contains(asset.id) { return false }
             return true
         }
+        // 「集合顺序」按集合里记录的成员次序排，用户拖动卡片就是改这个次序
+        if query.sort == .manual, let collection {
+            return ordered(result, by: collection.assetIDs, descending: query.descending)
+        }
         return sorted(result, by: query.sort, descending: query.descending)
+    }
+
+    /// 按给定的 id 次序排列。不在次序里的（脏数据）排到最后，不会消失
+    static func ordered(_ assets: [MediaAsset],
+                        by ids: [UUID],
+                        descending: Bool = false) -> [MediaAsset] {
+        var rank: [UUID: Int] = [:]
+        for (index, id) in ids.enumerated() where rank[id] == nil {
+            rank[id] = index
+        }
+        let indexed = Array(assets.enumerated())
+        let result = indexed.sorted { lhs, rhs in
+            let l = rank[lhs.element.id] ?? Int.max
+            let r = rank[rhs.element.id] ?? Int.max
+            if l == r { return lhs.offset < rhs.offset }
+            return l < r
+        }.map(\.element)
+        return descending ? result.reversed() : result
     }
 
     // MARK: - 集合
@@ -230,11 +261,72 @@ enum MediaShelf {
         return added
     }
 
+    /// 拖动重排：把 moving 拖到 target 上。
+    /// 往下拖插到 target 之后，往上拖插到 target 之前 —— 和列表拖动的直觉一致。
+    static func reorder(_ ids: [UUID], moving: UUID, over target: UUID) -> [UUID] {
+        guard moving != target,
+              let from = ids.firstIndex(of: moving),
+              ids.contains(target) else { return ids }
+        var result = ids
+        result.remove(at: from)
+        guard let anchor = result.firstIndex(of: target) else { return ids }
+        // 向下拖时 target 在移除后前移了一位，所以插到它后面（anchor + 1）
+        let index = from <= anchor ? anchor + 1 : anchor
+        result.insert(moving, at: min(index, result.count))
+        return result
+    }
+
+    /// 拖到集合空白处 → 挪到最后
+    static func moveToEnd(_ ids: [UUID], moving: UUID) -> [UUID] {
+        guard let from = ids.firstIndex(of: moving), from != ids.count - 1 else { return ids }
+        var result = ids
+        result.remove(at: from)
+        result.append(moving)
+        return result
+    }
+
+    /// 一次拖多个：整组挪到 target 上，并保持组内的相对顺序。
+    /// 向下拖时要倒着插，否则「先插 A 再插 B」会把 A、B 的位置插反。
+    static func reorder(_ ids: [UUID], moving: Set<UUID>, over target: UUID) -> [UUID] {
+        guard ids.contains(target) else { return ids }
+        let group = ids.filter { moving.contains($0) && $0 != target }
+        guard !group.isEmpty else { return ids }
+        let targetIndex = ids.firstIndex(of: target) ?? 0
+        let allBefore = group.allSatisfy { (ids.firstIndex(of: $0) ?? 0) < targetIndex }
+        var result = ids
+        for id in (allBefore ? group.reversed() : group) {
+            result = reorder(result, moving: id, over: target)
+        }
+        return result
+    }
+
+    /// 拖放进来的文件 URL → 素材库里对应素材的 id。
+    /// 同时登记标准化路径和解析过符号链接的路径，兼容 /var 与 /private/var、
+    /// /tmp 与 /private/tmp 这类同一位置的两种写法。
+    static func assetIDs(forURLs urls: [URL], in library: [MediaAsset]) -> Set<UUID> {
+        guard !urls.isEmpty else { return [] }
+        var byPath: [String: UUID] = [:]
+        for asset in library {
+            byPath[asset.url.standardizedFileURL.path] = asset.id
+            byPath[asset.url.resolvingSymlinksInPath().path] = asset.id
+        }
+        var result: Set<UUID> = []
+        for url in urls {
+            let plain = url.standardizedFileURL.path
+            let resolved = url.resolvingSymlinksInPath().path
+            if let id = byPath[plain] ?? byPath[resolved] {
+                result.insert(id)
+            }
+        }
+        return result
+    }
+
     /// 稳定排序：比较结果相等时保持原有（导入）顺序
     static func sorted(_ assets: [MediaAsset],
                        by sort: MediaSort,
                        descending: Bool) -> [MediaAsset] {
-        guard sort != .added else {
+        // 集合顺序由 apply 里的 ordered(...) 处理；这里兜底保持原序
+        guard sort != .added && sort != .manual else {
             return descending ? assets.reversed() : assets
         }
         let indexed = Array(assets.enumerated())
@@ -248,7 +340,7 @@ enum MediaShelf {
 
     private static func compare(_ a: MediaAsset, _ b: MediaAsset, by sort: MediaSort) -> ComparisonResult {
         switch sort {
-        case .added:
+        case .added, .manual:
             return .orderedSame
         case .name:
             return a.name.localizedStandardCompare(b.name)

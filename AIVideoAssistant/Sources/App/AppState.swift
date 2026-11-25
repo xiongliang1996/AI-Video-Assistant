@@ -745,6 +745,55 @@ final class AppState: ObservableObject {
         mediaLibrary.map(\.id).filter { ids.contains($0) }
     }
 
+    /// 集合内拖动排序。拖拽过程会连续触发，所以不发提示，只返回有没有真的动
+    @discardableResult
+    func reorderCollection(_ collectionID: UUID, moving: UUID, over target: UUID) -> Bool {
+        reorderCollection(collectionID, moving: [moving], over: target)
+    }
+
+    /// 一次拖多个：整组挪到 target 上（相对顺序不变）
+    @discardableResult
+    func reorderCollection(_ collectionID: UUID, moving: Set<UUID>, over target: UUID) -> Bool {
+        guard let index = mediaCollections.firstIndex(where: { $0.id == collectionID }) else { return false }
+        let before = mediaCollections[index].assetIDs
+        let after = MediaShelf.reorder(before, moving: moving, over: target)
+        guard after != before else { return false }
+        mediaCollections[index].assetIDs = after
+        return true
+    }
+
+    /// 拖到集合空白处 → 挪到该集合最后
+    @discardableResult
+    func moveToEndOfCollection(_ collectionID: UUID, moving: UUID) -> Bool {
+        guard let index = mediaCollections.firstIndex(where: { $0.id == collectionID }) else { return false }
+        let before = mediaCollections[index].assetIDs
+        let after = MediaShelf.moveToEnd(before, moving: moving)
+        guard after != before else { return false }
+        mediaCollections[index].assetIDs = after
+        return true
+    }
+
+    /// 拖放进来的文件 URL → 素材库里对应素材的 id（规则见 MediaShelf）
+    func assetIDs(forURLs urls: [URL]) -> Set<UUID> {
+        MediaShelf.assetIDs(forURLs: urls, in: mediaLibrary)
+    }
+
+    /// 把拖进来的文件加进集合；文件不在素材库里时给出提示而不是静默失败
+    @discardableResult
+    func addDroppedURLs(_ urls: [URL], toCollection collectionID: UUID) -> Int {
+        let ids = assetIDs(forURLs: urls)
+        if ids.isEmpty {
+            notify("这些文件还不在素材库里，先导入素材库再拖进集合")
+            return 0
+        }
+        let missing = urls.count - ids.count
+        let added = addToCollection(ids, collectionID: collectionID)
+        if missing > 0, added > 0 {
+            notify("已加入 \(added) 个素材，另有 \(missing) 个文件不在素材库里被跳过")
+        }
+        return added
+    }
+
     func addSubtitle(_ entry: SubtitleEntry,
                      fontSize: Int = 28,
                      colorHex: Int = 0xFFFFFF) {
