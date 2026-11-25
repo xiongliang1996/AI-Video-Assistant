@@ -621,6 +621,41 @@ final class AppState: ObservableObject {
         notify("「\(asset.name)」已加入时间线")
     }
 
+    /// 时间线上每个素材被引用的次数（素材库筛选 / 未使用清理都用它）
+    var mediaUsage: MediaUsage { MediaShelf.usage(in: timeline) }
+
+    /// 从素材库移除（只动素材库，不删磁盘文件，也不动时间线上已有的片段）
+    func removeMedia(ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        let removed = mediaLibrary.filter { ids.contains($0.id) }
+        guard !removed.isEmpty else { return }
+        let usage = mediaUsage
+        let used = removed.filter { usage.count($0) > 0 }.count
+        for asset in removed {
+            HoverPreviewStore.shared.invalidate(url: asset.url)
+        }
+        mediaLibrary.removeAll { ids.contains($0.id) }
+        if used > 0 {
+            notify("已移出 \(removed.count) 个素材，其中 \(used) 个仍被时间线使用")
+        } else {
+            notify("已移出 \(removed.count) 个素材")
+        }
+    }
+
+    /// 一次性移出没被时间线用到的素材
+    /// - Returns: 实际移出的数量
+    @discardableResult
+    func removeUnusedMedia() -> Int {
+        let ids = MediaShelf.unusedIDs(mediaLibrary, usage: mediaUsage)
+        guard !ids.isEmpty else {
+            notify("素材库里的素材都在时间线中用到了")
+            return 0
+        }
+        mediaLibrary.removeAll { ids.contains($0.id) }
+        notify("已移出 \(ids.count) 个未使用素材（文件仍在磁盘上）")
+        return ids.count
+    }
+
     func addSubtitle(_ entry: SubtitleEntry,
                      fontSize: Int = 28,
                      colorHex: Int = 0xFFFFFF) {

@@ -105,6 +105,23 @@ enum MediaType: String, Codable {
         case .image: return "photo"
         }
     }
+
+    var label: String {
+        switch self {
+        case .video: return "视频"
+        case .audio: return "音频"
+        case .image: return "图片"
+        }
+    }
+
+    /// 排序与分组时的固定顺序：视频 → 音频 → 图片
+    var sortOrder: Int {
+        switch self {
+        case .video: return 0
+        case .audio: return 1
+        case .image: return 2
+        }
+    }
 }
 
 final class MediaAsset: ObservableObject, Identifiable {
