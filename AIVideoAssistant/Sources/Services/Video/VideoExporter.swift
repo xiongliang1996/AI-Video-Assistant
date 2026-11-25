@@ -36,7 +36,8 @@ final class VideoExporter {
         let renderSize = settings.resolution.size
         let build = try await CompositionBuilder.build(items: items,
                                                        renderSize: renderSize,
-                                                       fps: settings.fps)
+                                                       fps: settings.fps,
+                                                       fillMode: settings.fillMode)
 
         let overlay = SubtitleFrameRenderer(items: items, renderSize: renderSize)
 

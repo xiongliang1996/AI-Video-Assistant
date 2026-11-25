@@ -54,6 +54,8 @@ final class AppState: ObservableObject {
     @Published var mediaCollections: [MediaCollection] = []
     @Published var timeline: [TimelineItem] = []
     @Published var selectedItemIDs: Set<UUID> = []
+    /// 用户自己存的导出预设（内置的在 ExportPresetLibrary.builtins）
+    @Published var customExportPresets: [ExportPreset] = []
 
     /// 单选时的主选中项；多选时为 nil（属性面板改为显示批量操作）
     var selectedItemID: UUID? {
@@ -130,6 +132,7 @@ final class AppState: ObservableObject {
 
     private init() {
         self.aiConfig = AIConfigManager.shared.load()
+        self.customExportPresets = ExportPresetStore.load()
 
         let store = ProjectStore.shared
         let summaries = store.list()
@@ -1154,12 +1157,59 @@ final class AppState: ObservableObject {
         if !keepStatus { previewStatus = nil }
     }
 
+    // MARK: - 导出预设
+
+    /// 内置 + 自定义
+    var exportPresets: [ExportPreset] {
+        ExportPresetLibrary.all(custom: customExportPresets)
+    }
+
+    /// 当前设置正好等于某个预设时返回它，否则 nil（说明是手调过的）
+    var activeExportPreset: ExportPreset? {
+        ExportPresetLibrary.matching(currentProject.settings, in: exportPresets)
+    }
+
+    func applyExportPreset(_ preset: ExportPreset) {
+        var project = currentProject
+        project.settings = preset.settings
+        currentProject = project
+        notify("已切换到「\(preset.name)」· \(preset.summary)")
+    }
+
+    /// 改单个参数（分辨率 / 帧率 / 画质 / 填充方式）都走这里，保证只有一处写入口
+    func updateExportSettings(_ change: (inout ExportSettings) -> Void) {
+        var project = currentProject
+        change(&project.settings)
+        currentProject = project
+    }
+
+    /// 把当前设置存成自定义预设，返回最终用的名字（重名会自动加序号）
+    @discardableResult
+    func saveExportPreset(named raw: String) -> String {
+        let existing = exportPresets
+        let preset = ExportPresetLibrary.makePreset(name: raw,
+                                                    settings: currentProject.settings,
+                                                    avoiding: existing)
+        customExportPresets = ExportPresetLibrary.upserting(preset, into: customExportPresets)
+        ExportPresetStore.save(customExportPresets)
+        notify("已保存预设「\(preset.name)」")
+        return preset.name
+    }
+
+    func deleteExportPreset(_ id: UUID) {
+        guard let preset = customExportPresets.first(where: { $0.id == id }) else { return }
+        customExportPresets = ExportPresetLibrary.removing(id: id, from: customExportPresets)
+        ExportPresetStore.save(customExportPresets)
+        notify("已删除预设「\(preset.name)」")
+    }
+
     // MARK: - 导出
 
     func exportVideo() {
+        let settings = currentProject.settings
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.mpeg4Movie]
-        panel.nameFieldStringValue = "\(currentProject.name).mp4"
+        panel.allowedContentTypes = [settings.format.avFileType == .mov ? .quickTimeMovie : .mpeg4Movie]
+        panel.nameFieldStringValue = "\(currentProject.name).\(settings.format.fileExtension)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         enqueueExport(to: url)

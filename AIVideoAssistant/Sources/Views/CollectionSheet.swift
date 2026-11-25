@@ -9,6 +9,7 @@ struct CollectionNameSheet: View {
     let title: String
     let placeholder: String
     let confirmTitle: String
+    var icon: String = "folder.badge.plus"
     let onSubmit: (String) -> Void
     let onCancel: () -> Void
 
@@ -19,11 +20,13 @@ struct CollectionNameSheet: View {
          initialName: String = "",
          placeholder: String = "例如：口播素材 / 空镜 / 配乐",
          confirmTitle: String = "创建",
+         icon: String = "folder.badge.plus",
          onSubmit: @escaping (String) -> Void,
          onCancel: @escaping () -> Void) {
         self.title = title
         self.placeholder = placeholder
         self.confirmTitle = confirmTitle
+        self.icon = icon
         self.onSubmit = onSubmit
         self.onCancel = onCancel
         _name = State(initialValue: initialName)
@@ -36,7 +39,7 @@ struct CollectionNameSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 7) {
-                Image(systemName: "folder.badge.plus")
+                Image(systemName: icon)
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.accent)
                 Text(title)

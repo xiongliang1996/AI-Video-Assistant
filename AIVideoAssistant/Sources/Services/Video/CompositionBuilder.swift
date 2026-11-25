@@ -38,13 +38,16 @@ enum CompositionBuilder {
         var extraTail: Double = 0
         var inTransition: Double = 0
         var trackSlot: Int = 0
+        /// 画幅填充方式（全局一致，放在计划里省得一路传参）
+        var fillMode: ExportFillMode = .fit
     }
 
     // MARK: - 构建
 
     static func build(items: [TimelineItem],
                       renderSize: CGSize,
-                      fps: Int) async throws -> CompositionBuild {
+                      fps: Int,
+                      fillMode: ExportFillMode = .fit) async throws -> CompositionBuild {
 
         let videoItems = items
             .filter { ($0.type == .video || $0.type == .aiGenerated) && $0.assetURL != nil }
@@ -85,7 +88,8 @@ enum CompositionBuilder {
                                   speed: speed,
                                   sourceIn: sourceIn,
                                   sourceAvailable: available,
-                                  timelineDuration: timelineDuration))
+                                  timelineDuration: timelineDuration,
+                                  fillMode: fillMode))
         }
 
         // 2. 计算转场重叠量
@@ -250,12 +254,23 @@ enum CompositionBuilder {
         let hasVideo = videoTracks.contains { !$0.segments.isEmpty }
         guard hasVideo || !clipAudioTracks.isEmpty else { throw VideoError.noVideoTrack }
 
+        // 黑底轨：AVFoundation 的合成器不会清空未覆盖区域，
+        // 时间线空隙和「适应」画幅的黑边会拿到未初始化内存，编出来是绿色（YUV 0,0,0）。
+        // 垫一条铺满全片的黑色轨，留白才是真黑。
+        var backdropTrack: AVMutableCompositionTrack?
+        if hasVideo {
+            backdropTrack = makeBackdropTrack(in: composition,
+                                              renderSize: renderSize,
+                                              totalDuration: max(0.1, endCursor))
+        }
+
         let videoComposition = hasVideo
             ? makeVideoComposition(plans: plans,
                                    videoTracks: videoTracks,
                                    renderSize: renderSize,
                                    fps: fps,
-                                   totalDuration: endCursor)
+                                   totalDuration: endCursor,
+                                   backdrop: backdropTrack)
             : nil
 
 
@@ -324,7 +339,8 @@ enum CompositionBuilder {
                                              videoTracks: [AVMutableCompositionTrack],
                                              renderSize: CGSize,
                                              fps: Int,
-                                             totalDuration: Double) -> AVMutableVideoComposition {
+                                             totalDuration: Double,
+                                             backdrop: AVMutableCompositionTrack?) -> AVMutableVideoComposition {
         let vc = AVMutableVideoComposition()
         vc.renderSize = renderSize
         vc.frameDuration = CMTime(value: 1, timescale: CMTimeScale(max(1, fps)))
@@ -375,8 +391,117 @@ enum CompositionBuilder {
             instructions.append(blankInstruction(from: cursor, to: totalDuration))
         }
 
+        // 黑底轨垫在每条指令的最底层（layerInstructions 第一个是最前面，所以追加在末尾）
+        if let backdrop {
+            for case let instruction as AVMutableVideoCompositionInstruction in instructions {
+                let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: backdrop)
+                layer.setTransform(.identity, at: instruction.timeRange.start)
+                instruction.layerInstructions = instruction.layerInstructions + [layer]
+            }
+        }
+
         vc.instructions = instructions
         return vc
+    }
+
+    // MARK: - 黑底轨
+
+    /// 造一条覆盖整段时长的黑色视频轨。一帧黑色画面按总时长拉伸，
+    /// 比逐帧插入便宜得多（60 秒的时间线也只插一次）。
+    private static func makeBackdropTrack(in composition: AVMutableComposition,
+                                          renderSize: CGSize,
+                                          totalDuration: Double) -> AVMutableCompositionTrack? {
+        guard let asset = blackFrameAsset(renderSize: renderSize),
+              let source = asset.tracks(withMediaType: .video).first,
+              let track = composition.addMutableTrack(withMediaType: .video,
+                                                      preferredTrackID: kCMPersistentTrackID_Invalid)
+        else { return nil }
+
+        let frame = CMTime(value: 1, timescale: 30)
+        do {
+            try track.insertTimeRange(CMTimeRange(start: .zero, duration: frame),
+                                      of: source, at: .zero)
+        } catch {
+            return nil
+        }
+        track.scaleTimeRange(CMTimeRange(start: .zero, duration: frame),
+                             toDuration: CMTime(seconds: totalDuration, preferredTimescale: 600))
+        return track
+    }
+
+    /// 一帧黑色画面的缓存文件，按尺寸各存一份，重复导出不再重写
+    private static let blackFrameLock = NSLock()
+
+    private static func blackFrameAsset(renderSize: CGSize) -> AVURLAsset? {
+        let width = Int(renderSize.width.rounded())
+        let height = Int(renderSize.height.rounded())
+        guard width > 1, height > 1 else { return nil }
+
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("aiva-backdrop-\(width)x\(height).mov")
+
+        blackFrameLock.lock()
+        defer { blackFrameLock.unlock() }
+
+        if !FileManager.default.fileExists(atPath: url.path) {
+            guard writeBlackFrame(to: url, width: width, height: height) else { return nil }
+        }
+        return AVURLAsset(url: url)
+    }
+
+    private static func writeBlackFrame(to url: URL, width: Int, height: Int) -> Bool {
+        try? FileManager.default.removeItem(at: url)
+        guard let writer = try? AVAssetWriter(outputURL: url, fileType: .mov) else { return false }
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: width,
+            AVVideoHeightKey: height
+        ])
+        input.expectsMediaDataInRealTime = false
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+            assetWriterInput: input,
+            sourcePixelBufferAttributes: [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey as String: width,
+                kCVPixelBufferHeightKey as String: height
+            ])
+        writer.add(input)
+        guard writer.startWriting() else { return false }
+        writer.startSession(atSourceTime: .zero)
+
+        guard let pool = adaptor.pixelBufferPool else {
+            writer.cancelWriting()
+            return false
+        }
+        var buffer: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer)
+        guard let pixel = buffer else {
+            writer.cancelWriting()
+            return false
+        }
+        CVPixelBufferLockBaseAddress(pixel, [])
+        if let base = CVPixelBufferGetBaseAddress(pixel),
+           let context = CGContext(data: base,
+                                   width: width,
+                                   height: height,
+                                   bitsPerComponent: 8,
+                                   bytesPerRow: CVPixelBufferGetBytesPerRow(pixel),
+                                   space: CGColorSpaceCreateDeviceRGB(),
+                                   bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                       | CGBitmapInfo.byteOrder32Little.rawValue) {
+            context.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        }
+        CVPixelBufferUnlockBaseAddress(pixel, [])
+
+        while !input.isReadyForMoreMediaData { usleep(1000) }
+        adaptor.append(pixel, withPresentationTime: .zero)
+        input.markAsFinished()
+
+        let sem = DispatchSemaphore(value: 0)
+        writer.finishWriting { sem.signal() }
+        sem.wait()
+        return writer.status == .completed
     }
 
     private static func blankInstruction(from: Double, to: Double) -> AVMutableVideoCompositionInstruction {
@@ -656,7 +781,9 @@ enum CompositionBuilder {
         guard width > 1, height > 1 else { return .identity }
 
         let rect = CGRect(x: raw.minX, y: raw.minY, width: width, height: height)
-        let fit = min(renderSize.width / width, renderSize.height / height)
+        let fit = fitScale(renderSize: renderSize,
+                           naturalSize: CGSize(width: width, height: height),
+                           mode: plan.fillMode)
         let userScale = max(0.01, scaleOverride ?? plan.item.properties.scale)
         let scale = fit * userScale
 
@@ -671,6 +798,19 @@ enum CompositionBuilder {
         transform = transform.concatenating(CGAffineTransform(translationX: renderSize.width / 2,
                                                               y: renderSize.height / 2))
         return transform
+    }
+
+    /// 素材铺进画幅的比例。
+    /// 适应取 min（完整画面，短边留黑边）；填满取 max（铺满画幅，长边被裁掉）。
+    /// 画幅或素材尺寸非法时退回 1，避免 NaN 传进 transform。
+    static func fitScale(renderSize: CGSize,
+                         naturalSize: CGSize,
+                         mode: ExportFillMode) -> CGFloat {
+        guard naturalSize.width > 1, naturalSize.height > 1,
+              renderSize.width > 1, renderSize.height > 1 else { return 1 }
+        let widthRatio = renderSize.width / naturalSize.width
+        let heightRatio = renderSize.height / naturalSize.height
+        return mode == .fit ? min(widthRatio, heightRatio) : max(widthRatio, heightRatio)
     }
 
     private static func scaleAbout(_ scale: CGFloat, center: CGPoint) -> CGAffineTransform {

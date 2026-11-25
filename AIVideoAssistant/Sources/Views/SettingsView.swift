@@ -13,6 +13,12 @@ struct SettingsView: View {
     @State private var tab = 0
     @State private var draft = AIConfig()
     @State private var testResult: String?
+    @State private var presetSheet = false
+
+    /// initialTab 只用于预览 / 截图验证
+    init(initialTab: Int = 0) {
+        _tab = State(initialValue: initialTab)
+    }
 
     private let tabs: [(String, String)] = [
         ("OpenAI", "sparkles"),
@@ -214,55 +220,140 @@ struct SettingsView: View {
 
     private var exportPane: some View {
         VStack(alignment: .leading, spacing: 14) {
-            formField("分辨率") {
-                Picker("", selection: Binding(
-                    get: { appState.currentProject.settings.resolution },
-                    set: { newValue in
-                        var project = appState.currentProject
-                        project.settings.resolution = newValue
-                        appState.currentProject = project
+            presetSection
+
+            Divider()
+
+            HStack(alignment: .top, spacing: 12) {
+                formField("分辨率") {
+                    Picker("", selection: Binding(
+                        get: { appState.currentProject.settings.resolution },
+                        set: { value in
+                            appState.updateExportSettings { $0.resolution = value }
+                        }
+                    )) {
+                        ForEach(ExportResolution.allCases, id: \.self) { res in
+                            Text("\(res.rawValue) · \(res.label)").tag(res)
+                        }
                     }
-                )) {
-                    ForEach(ExportResolution.allCases, id: \.self) { res in
-                        Text("\(res.rawValue) · \(res.label)").tag(res)
-                    }
+                    .labelsHidden()
                 }
-                .labelsHidden()
+
+                formField("帧率") {
+                    Picker("", selection: Binding(
+                        get: { appState.currentProject.settings.fps },
+                        set: { value in
+                            appState.updateExportSettings { $0.fps = value }
+                        }
+                    )) {
+                        Text("24 fps").tag(24)
+                        Text("30 fps").tag(30)
+                        Text("60 fps").tag(60)
+                    }
+                    .labelsHidden()
+                }
+
+                formField("画质") {
+                    Picker("", selection: Binding(
+                        get: { appState.currentProject.settings.quality },
+                        set: { value in
+                            appState.updateExportSettings { $0.quality = value }
+                        }
+                    )) {
+                        ForEach(ExportQuality.allCases, id: \.self) { q in
+                            Text(q.rawValue).tag(q)
+                        }
+                    }
+                    .labelsHidden()
+                }
             }
 
-            formField("帧率") {
-                Picker("", selection: Binding(
-                    get: { appState.currentProject.settings.fps },
-                    set: { newValue in
-                        var project = appState.currentProject
-                        project.settings.fps = newValue
-                        appState.currentProject = project
-                    }
-                )) {
-                    Text("24 fps").tag(24)
-                    Text("30 fps").tag(30)
-                    Text("60 fps").tag(60)
+            formField("画幅填充") {
+                VStack(alignment: .leading, spacing: 6) {
+                    SegmentedControl(options: ExportFillMode.allCases,
+                                     title: { $0.shortLabel },
+                                     selection: Binding(
+                                        get: { appState.currentProject.settings.fillMode },
+                                        set: { value in
+                                            appState.updateExportSettings { $0.fillMode = value }
+                                        }
+                                     ))
+                    note(appState.currentProject.settings.fillMode.label,
+                         icon: appState.currentProject.settings.fillMode.icon)
                 }
-                .labelsHidden()
             }
 
-            formField("画质") {
-                Picker("", selection: Binding(
-                    get: { appState.currentProject.settings.quality },
-                    set: { newValue in
-                        var project = appState.currentProject
-                        project.settings.quality = newValue
-                        appState.currentProject = project
-                    }
-                )) {
-                    ForEach(ExportQuality.allCases, id: \.self) { q in
-                        Text(q.rawValue).tag(q)
-                    }
+            if appState.currentProject.settings.resolution.isPortraitOrSquare {
+                note("素材是 16:9 时，选「填满」会裁掉左右两边；选「适应」会上下留黑边", icon: "info.circle")
+            } else {
+                note("导出使用 AVFoundation 硬件编码，H.264 / ProRes 自动选择", icon: "info.circle")
+            }
+        }
+    }
+
+    /// 预设：一排胶囊 + 存为预设 / 删除
+    private var presetSection: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Text("导出预设")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(Theme.text2)
+                if let active = appState.activeExportPreset {
+                    Text(active.summary)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Theme.text3)
+                } else {
+                    Text("当前是自定义参数")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Theme.warning)
                 }
-                .labelsHidden()
+                Spacer()
+                Button {
+                    presetSheet = true
+                } label: {
+                    Text("存为预设")
+                        .font(.system(size: 10.5))
+                }
+                .buttonStyle(SoftButtonStyle(height: 24))
+                .help("把当前分辨率 / 帧率 / 画质 / 填充方式存成一套预设")
+
+                if let active = appState.activeExportPreset, !active.isBuiltin {
+                    Button {
+                        appState.deleteExportPreset(active.id)
+                    } label: {
+                        Text("删除")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Theme.danger)
+                    }
+                    .buttonStyle(SoftButtonStyle(height: 24))
+                    .help("删除预设「\(active.name)」")
+                }
             }
 
-            note("导出使用 AVFoundation 硬件编码，H.264 / ProRes 自动选择", icon: "info.circle")
+            // 用自适应网格而不是横向滚动：预设一般就六七个，
+            // 横滑会在右边切出半截胶囊，看着像坏了
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 116), spacing: 6, alignment: .leading)],
+                      alignment: .leading, spacing: 6) {
+                ForEach(appState.exportPresets) { preset in
+                    Chip(text: preset.name,
+                         icon: preset.isBuiltin ? "film" : "square.stack.3d.up",
+                         selected: appState.activeExportPreset?.id == preset.id) {
+                        appState.applyExportPreset(preset)
+                    }
+                    .help("\(preset.summary) · \(preset.aspectLabel)")
+                }
+            }
+        }
+        .sheet(isPresented: $presetSheet) {
+            CollectionNameSheet(title: "存为导出预设",
+                                placeholder: "例如：客户交付 / 抖音竖屏",
+                                confirmTitle: "保存",
+                                icon: "square.stack.3d.up") { name in
+                appState.saveExportPreset(named: name)
+                presetSheet = false
+            } onCancel: {
+                presetSheet = false
+            }
         }
     }
 

@@ -33,6 +33,37 @@ struct ExportSettings: Codable, Hashable {
     var fps: Int = 30
     var format: ExportFormat = .mp4
     var quality: ExportQuality = .high
+    /// 素材比例和画幅不一致时怎么办：留黑边还是裁切
+    var fillMode: ExportFillMode = .fit
+
+    init() {}
+
+    init(resolution: ExportResolution,
+         fps: Int = 30,
+         format: ExportFormat = .mp4,
+         quality: ExportQuality = .high,
+         fillMode: ExportFillMode = .fit) {
+        self.resolution = resolution
+        self.fps = fps
+        self.format = format
+        self.quality = quality
+        self.fillMode = fillMode
+    }
+
+    /// v1.17 及更早的项目文件没有 fillMode，缺字段时按「适应」处理
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        resolution = (try? container.decodeIfPresent(ExportResolution.self, forKey: .resolution)) ?? .r1080p
+        fps = (try? container.decodeIfPresent(Int.self, forKey: .fps)) ?? 30
+        format = (try? container.decodeIfPresent(ExportFormat.self, forKey: .format)) ?? .mp4
+        quality = (try? container.decodeIfPresent(ExportQuality.self, forKey: .quality)) ?? .high
+        fillMode = (try? container.decodeIfPresent(ExportFillMode.self, forKey: .fillMode)) ?? .fit
+    }
+
+    /// 给界面看的一行摘要
+    var summary: String {
+        "\(resolution.label) · \(fps)fps · \(quality.rawValue) · \(fillMode.shortLabel)"
+    }
 }
 
 enum ExportResolution: String, Codable, CaseIterable, Hashable {
@@ -40,6 +71,9 @@ enum ExportResolution: String, Codable, CaseIterable, Hashable {
     case r1080p = "1080p"
     case r1440p = "1440p"
     case r4k = "4K"
+    case vertical1080 = "竖屏 1080"
+    case vertical720 = "竖屏 720"
+    case square1080 = "方形 1080"
 
     var size: CGSize {
         switch self {
@@ -47,6 +81,9 @@ enum ExportResolution: String, Codable, CaseIterable, Hashable {
         case .r1080p: return CGSize(width: 1920, height: 1080)
         case .r1440p: return CGSize(width: 2560, height: 1440)
         case .r4k: return CGSize(width: 3840, height: 2160)
+        case .vertical1080: return CGSize(width: 1080, height: 1920)
+        case .vertical720: return CGSize(width: 720, height: 1280)
+        case .square1080: return CGSize(width: 1080, height: 1080)
         }
     }
 
@@ -56,6 +93,43 @@ enum ExportResolution: String, Codable, CaseIterable, Hashable {
         case .r1080p: return "1920×1080"
         case .r1440p: return "2560×1440"
         case .r4k: return "3840×2160"
+        case .vertical1080: return "1080×1920"
+        case .vertical720: return "720×1280"
+        case .square1080: return "1080×1080"
+        }
+    }
+
+    /// 竖屏 / 方形这类非 16:9 画幅，界面上要提示「素材会被裁切或留边」
+    var isPortraitOrSquare: Bool {
+        size.height >= size.width
+    }
+
+    var aspectLabel: String {
+        switch self {
+        case .r720p, .r1080p, .r1440p, .r4k: return "16:9"
+        case .vertical1080, .vertical720: return "9:16"
+        case .square1080: return "1:1"
+        }
+    }
+}
+
+enum ExportFillMode: String, Codable, CaseIterable, Hashable {
+    case fit
+    case fill
+
+    var label: String {
+        switch self {
+        case .fit: return "适应（完整画面，可能留黑边）"
+        case .fill: return "填满（铺满画幅，超出部分裁掉）"
+        }
+    }
+
+    var shortLabel: String { self == .fit ? "适应" : "填满" }
+
+    var icon: String {
+        switch self {
+        case .fit: return "arrow.down.right.and.arrow.up.left"
+        case .fill: return "arrow.up.left.and.arrow.down.right"
         }
     }
 }
