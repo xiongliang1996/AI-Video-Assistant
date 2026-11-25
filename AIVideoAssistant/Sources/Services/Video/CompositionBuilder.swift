@@ -160,20 +160,20 @@ enum CompositionBuilder {
 
             let plan = plans[index]
             let startSeconds = plan.item.startTime
-            let start = CMTime(seconds: startSeconds, preferredTimescale: 600)
+            let start = cmt(startSeconds)
             let wantedSource = (plan.timelineDuration + plan.extraTail) * plan.speed
             let take = min(wantedSource, plan.sourceAvailable)
             guard take > 0.05 else { continue }
 
-            let range = CMTimeRange(start: CMTime(seconds: plan.sourceIn, preferredTimescale: 600),
-                                    duration: CMTime(seconds: take, preferredTimescale: 600))
+            let range = CMTimeRange(start: cmt(plan.sourceIn),
+                                    duration: cmt(take))
 
             do {
                 try track.insertTimeRange(range, of: plan.videoTrack, at: start)
                 let insertedRange = CMTimeRange(start: start, duration: range.duration)
                 let target = take / plan.speed
                 if abs(target - take) > 0.01 {
-                    track.scaleTimeRange(insertedRange, toDuration: CMTime(seconds: target, preferredTimescale: 600))
+                    track.scaleTimeRange(insertedRange, toDuration: cmt(target))
                 }
             } catch {
                 continue
@@ -190,7 +190,7 @@ enum CompositionBuilder {
                     let insertedRange = CMTimeRange(start: start, duration: range.duration)
                     if abs(playDuration - take) > 0.01 {
                         dest.scaleTimeRange(insertedRange,
-                                            toDuration: CMTime(seconds: playDuration, preferredTimescale: 600))
+                                            toDuration: cmt(playDuration))
                     }
                     applyVolume(params(for: dest),
                                 properties: plan.item.properties,
@@ -233,9 +233,9 @@ enum CompositionBuilder {
                 guardCount += 1
             }
 
-            let start = CMTime(seconds: startSeconds, preferredTimescale: 600)
-            let range = CMTimeRange(start: CMTime(seconds: sourceIn, preferredTimescale: 600),
-                                    duration: CMTime(seconds: take, preferredTimescale: 600))
+            let start = cmt(startSeconds)
+            let range = CMTimeRange(start: cmt(sourceIn),
+                                    duration: cmt(take))
 
             guard let dest = audioTrack(from: &clipAudioTracks, slot: lane) else { continue }
             do {
@@ -257,19 +257,27 @@ enum CompositionBuilder {
         // 黑底轨：AVFoundation 的合成器不会清空未覆盖区域，
         // 时间线空隙和「适应」画幅的黑边会拿到未初始化内存，编出来是绿色（YUV 0,0,0）。
         // 垫一条铺满全片的黑色轨，留白才是真黑。
+        //
+        // 长度直接取「垫之前」的合成时长：这样底轨插进来不会把总时长撑长，
+        // 也不会因为浮点取整比真正的结尾短一格，末帧掉回没底的黑洞。
         var backdropTrack: AVMutableCompositionTrack?
         if hasVideo {
+            let realEnd = CMTimeGetSeconds(composition.duration)
             backdropTrack = makeBackdropTrack(in: composition,
                                               renderSize: renderSize,
-                                              totalDuration: max(0.1, endCursor))
+                                              totalDuration: max(0.1, realEnd.isFinite ? realEnd : endCursor))
         }
+
+        // 用合成自己的时长做指令终点，而不是浮点的 endCursor：
+        // 两者差一个 tick 就会让指令铺不满整片，导出直接报 -11841
+        let exactDuration = composition.duration
 
         let videoComposition = hasVideo
             ? makeVideoComposition(plans: plans,
                                    videoTracks: videoTracks,
                                    renderSize: renderSize,
                                    fps: fps,
-                                   totalDuration: endCursor,
+                                   totalDuration: exactDuration > .zero ? exactDuration : cmt(endCursor),
                                    backdrop: backdropTrack)
             : nil
 
@@ -305,32 +313,54 @@ enum CompositionBuilder {
             for index in 1..<samples.count {
                 let a = samples[index - 1]
                 let b = samples[index]
-                guard b.time - a.time > 0.001 else { continue }
+                guard b.time - a.time > 0.001,
+                      let ramp = timeRange(from: start + a.time, to: start + b.time) else { continue }
                 params.setVolumeRamp(fromStartVolume: Float(min(max(a.value, 0), 2)),
                                      toEndVolume: Float(min(max(b.value, 0), 2)),
-                                     timeRange: CMTimeRange(
-                                        start: CMTime(seconds: start + a.time, preferredTimescale: 600),
-                                        duration: CMTime(seconds: b.time - a.time, preferredTimescale: 600)))
+                                     timeRange: ramp)
             }
             return
         }
-        let full = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 600),
-                               duration: CMTime(seconds: max(0.01, end - start), preferredTimescale: 600))
+        guard let full = timeRange(from: start, to: end) else { return }
         params.setVolumeRamp(fromStartVolume: level, toEndVolume: level, timeRange: full)
 
         let inLength = min(max(0, fadeIn), (end - start) * 0.5)
-        if inLength > 0.02 {
-            params.setVolumeRamp(fromStartVolume: 0, toEndVolume: level,
-                                 timeRange: CMTimeRange(start: full.start,
-                                                        duration: CMTime(seconds: inLength, preferredTimescale: 600)))
+        if inLength > 0.02, let ramp = timeRange(from: start, to: start + inLength) {
+            params.setVolumeRamp(fromStartVolume: 0, toEndVolume: level, timeRange: ramp)
         }
         let outLength = min(max(0, fadeOut), (end - start) * 0.5)
-        if outLength > 0.02 {
-            let outStart = end - outLength
-            params.setVolumeRamp(fromStartVolume: level, toEndVolume: 0,
-                                 timeRange: CMTimeRange(start: CMTime(seconds: outStart, preferredTimescale: 600),
-                                                        duration: CMTime(seconds: outLength, preferredTimescale: 600)))
+        if outLength > 0.02, let ramp = timeRange(from: end - outLength, to: end) {
+            params.setVolumeRamp(fromStartVolume: level, toEndVolume: 0, timeRange: ramp)
         }
+    }
+
+    // MARK: - 时间区间
+
+    /// 时间线精度：1/600 秒。所有边界都落在这一格上。
+    static let timescale: CMTimeScale = 600
+
+    /// 秒 → CMTime，**四舍五入**到最近的 tick。
+    ///
+    /// 不能用 `CMTime(seconds:preferredTimescale:)`：它是截断的，
+    /// 3.01 秒 × 600 = 1805.9999… 会被截成 1805，于是底轨、指令、合成时长
+    /// 各差一格。指令没铺满整片，导出就报 -11841。
+    static func cmt(_ seconds: Double) -> CMTime {
+        let ticks = (seconds * Double(timescale)).rounded()
+        return CMTime(value: CMTimeValue(ticks.isFinite ? ticks : 0), timescale: timescale)
+    }
+
+    /// 把两个「秒」边界转成一个 CMTimeRange，长度由两端相减得出。
+    ///
+    /// 为什么不能直接 `CMTime(seconds: to - from)`：起止各自取整一次、
+    /// 长度再取整一次，三次独立取整会在相邻区间之间漏出或叠出 1 个 tick。
+    /// 漏出 → 指令没铺满整片，导出报 -11841（The video could not be composed）；
+    /// 叠出 → 同一图层两条 opacity ramp 相交，直接抛 NSInvalidArgumentException。
+    /// 两端的 tick 都是确定的，长度用减法就严丝合缝。
+    private static func timeRange(from: Double, to: Double) -> CMTimeRange? {
+        let start = cmt(from)
+        let end = cmt(to)
+        guard end > start else { return nil }
+        return CMTimeRange(start: start, duration: CMTimeSubtract(end, start))
     }
 
     // MARK: - 视频合成
@@ -339,14 +369,36 @@ enum CompositionBuilder {
                                              videoTracks: [AVMutableCompositionTrack],
                                              renderSize: CGSize,
                                              fps: Int,
-                                             totalDuration: Double,
+                                             totalDuration: CMTime,
                                              backdrop: AVMutableCompositionTrack?) -> AVMutableVideoComposition {
         let vc = AVMutableVideoComposition()
         vc.renderSize = renderSize
         vc.frameDuration = CMTime(value: 1, timescale: CMTimeScale(max(1, fps)))
 
-        var instructions: [AVVideoCompositionInstructionProtocol] = []
+        var instructions: [AVMutableVideoCompositionInstruction] = []
         var cursor: Double = 0
+
+        /// 逐条铺砖：新指令必须从上一条的结尾开始，缝隙补黑场、重叠裁掉。
+        /// AVFoundation 要求指令严格铺满整片且互不重叠，差一个 tick 就 -11841。
+        func append(_ instruction: AVMutableVideoCompositionInstruction?) {
+            guard var ins = instruction else { return }
+            let start = ins.timeRange.start
+            let end = ins.timeRange.end
+            if let prevEnd = instructions.last?.timeRange.end {
+                if start > prevEnd {
+                    instructions.append(blank(from: prevEnd, to: start))
+                } else if start < prevEnd {
+                    guard end > prevEnd else { return }
+                    ins.timeRange = CMTimeRange(start: prevEnd,
+                                                duration: CMTimeSubtract(end, prevEnd))
+                }
+            } else if start > .zero {
+                // 开头空出来的部分也要铺上，否则第一帧没指令
+                instructions.append(blank(from: .zero, to: start))
+            }
+            guard ins.timeRange.duration > .zero else { return }
+            instructions.append(ins)
+        }
 
         for plan in plans {
             let start = plan.item.startTime
@@ -356,44 +408,51 @@ enum CompositionBuilder {
             // 与上一段重叠（说明指令已经覆盖），跳过
             if start < cursor - 0.01 { continue }
 
-            if start > cursor + 0.01 {
-                instructions.append(blankInstruction(from: cursor, to: start))
-            }
-
             let track = videoTracks[plan.trackSlot]
             let t = plan.inTransition
             if t > 0, let prev = plans.last(where: {
                 abs(($0.item.startTime + $0.timelineDuration) - start) < 0.06 && $0.item.id != plan.item.id
             }), prev.trackSlot < videoTracks.count {
                 let prevTrack = videoTracks[prev.trackSlot]
-                instructions.append(transitionInstruction(prev: prev,
-                                                          prevTrack: prevTrack,
-                                                          cur: plan,
-                                                          curTrack: track,
-                                                          duration: t,
-                                                          renderSize: renderSize))
-                instructions.append(singleInstruction(plan: plan,
-                                                      track: track,
-                                                      from: start + t,
-                                                      to: end,
-                                                      renderSize: renderSize))
+                append(transitionInstruction(prev: prev,
+                                             prevTrack: prevTrack,
+                                             cur: plan,
+                                             curTrack: track,
+                                             duration: t,
+                                             renderSize: renderSize))
+                append(singleInstruction(plan: plan,
+                                         track: track,
+                                         from: start + t,
+                                         to: end,
+                                         renderSize: renderSize))
             } else {
-                instructions.append(singleInstruction(plan: plan,
-                                                      track: track,
-                                                      from: start,
-                                                      to: end,
-                                                      renderSize: renderSize))
+                append(singleInstruction(plan: plan,
+                                         track: track,
+                                         from: start,
+                                         to: end,
+                                         renderSize: renderSize))
             }
             cursor = max(cursor, end)
         }
 
-        if totalDuration > cursor + 0.01 {
-            instructions.append(blankInstruction(from: cursor, to: totalDuration))
+        // 收尾：尾巴补齐，越界的裁掉，保证终点正好等于合成时长
+        if let lastEnd = instructions.last?.timeRange.end {
+            if lastEnd < totalDuration {
+                append(blank(from: lastEnd, to: totalDuration))
+            } else if lastEnd > totalDuration, let last = instructions.last {
+                let start = last.timeRange.start
+                if totalDuration > start {
+                    last.timeRange = CMTimeRange(start: start,
+                                                 duration: CMTimeSubtract(totalDuration, start))
+                } else {
+                    instructions.removeLast()
+                }
+            }
         }
 
         // 黑底轨垫在每条指令的最底层（layerInstructions 第一个是最前面，所以追加在末尾）
         if let backdrop {
-            for case let instruction as AVMutableVideoCompositionInstruction in instructions {
+            for instruction in instructions {
                 let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: backdrop)
                 layer.setTransform(.identity, at: instruction.timeRange.start)
                 instruction.layerInstructions = instruction.layerInstructions + [layer]
@@ -402,6 +461,14 @@ enum CompositionBuilder {
 
         vc.instructions = instructions
         return vc
+    }
+
+    /// 空指令（只有黑底）：用来填时间线空隙和首尾没被片段盖住的区间
+    private static func blank(from: CMTime, to: CMTime) -> AVMutableVideoCompositionInstruction {
+        let instruction = AVMutableVideoCompositionInstruction()
+        instruction.timeRange = CMTimeRange(start: from, duration: CMTimeSubtract(to, from))
+        instruction.layerInstructions = []
+        return instruction
     }
 
     // MARK: - 黑底轨
@@ -425,7 +492,7 @@ enum CompositionBuilder {
             return nil
         }
         track.scaleTimeRange(CMTimeRange(start: .zero, duration: frame),
-                             toDuration: CMTime(seconds: totalDuration, preferredTimescale: 600))
+                             toDuration: cmt(totalDuration))
         return track
     }
 
@@ -504,22 +571,13 @@ enum CompositionBuilder {
         return writer.status == .completed
     }
 
-    private static func blankInstruction(from: Double, to: Double) -> AVMutableVideoCompositionInstruction {
-        let instruction = AVMutableVideoCompositionInstruction()
-        instruction.timeRange = CMTimeRange(start: CMTime(seconds: from, preferredTimescale: 600),
-                                            duration: CMTime(seconds: max(0.01, to - from), preferredTimescale: 600))
-        instruction.layerInstructions = []
-        return instruction
-    }
-
     private static func singleInstruction(plan: ClipPlan,
                                           track: AVMutableCompositionTrack,
                                           from: Double,
                                           to: Double,
-                                          renderSize: CGSize) -> AVMutableVideoCompositionInstruction {
+                                          renderSize: CGSize) -> AVMutableVideoCompositionInstruction? {
+        guard let range = timeRange(from: from, to: to) else { return nil }
         let instruction = AVMutableVideoCompositionInstruction()
-        let range = CMTimeRange(start: CMTime(seconds: from, preferredTimescale: 600),
-                                duration: CMTime(seconds: max(0.01, to - from), preferredTimescale: 600))
         instruction.timeRange = range
         instruction.layerInstructions = [layerInstruction(plan: plan,
                                                           track: track,
@@ -534,7 +592,7 @@ enum CompositionBuilder {
                                          range: CMTimeRange) -> AVMutableVideoCompositionLayerInstruction {
         let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: track)
         let base = baseTransform(plan: plan, renderSize: renderSize)
-        let start = CMTimeGetSeconds(range.start)
+        let clipStart = plan.item.startTime
         let props = plan.item.properties
         let clipDuration = max(0.05, plan.timelineDuration)
 
@@ -544,14 +602,11 @@ enum CompositionBuilder {
             for index in 1..<scaleSamples.count {
                 let a = scaleSamples[index - 1]
                 let b = scaleSamples[index]
-                guard b.time - a.time > 0.001 else { continue }
+                guard b.time - a.time > 0.001,
+                      let ramp = timeRange(from: clipStart + a.time, to: clipStart + b.time) else { continue }
                 let from = baseTransform(plan: plan, renderSize: renderSize, scaleOverride: a.value)
                 let to = baseTransform(plan: plan, renderSize: renderSize, scaleOverride: b.value)
-                layer.setTransformRamp(fromStart: from,
-                                       toEnd: to,
-                                       timeRange: CMTimeRange(
-                                        start: CMTime(seconds: start + a.time, preferredTimescale: 600),
-                                        duration: CMTime(seconds: b.time - a.time, preferredTimescale: 600)))
+                layer.setTransformRamp(fromStart: from, toEnd: to, timeRange: ramp)
             }
         } else {
             layer.setTransform(base, at: range.start)
@@ -565,12 +620,11 @@ enum CompositionBuilder {
             for index in 1..<opacitySamples.count {
                 let a = opacitySamples[index - 1]
                 let b = opacitySamples[index]
-                guard b.time - a.time > 0.001 else { continue }
+                guard b.time - a.time > 0.001,
+                      let ramp = timeRange(from: clipStart + a.time, to: clipStart + b.time) else { continue }
                 layer.setOpacityRamp(fromStartOpacity: Float(min(max(a.value, 0), 1)),
                                      toEndOpacity: Float(min(max(b.value, 0), 1)),
-                                     timeRange: CMTimeRange(
-                                        start: CMTime(seconds: start + a.time, preferredTimescale: 600),
-                                        duration: CMTime(seconds: b.time - a.time, preferredTimescale: 600)))
+                                     timeRange: ramp)
             }
             return layer
         }
@@ -580,21 +634,18 @@ enum CompositionBuilder {
         // 入场淡入（有转场时由转场指令接管）
         if plan.inTransition <= 0 {
             let fadeIn = min(plan.item.properties.fadeIn, plan.timelineDuration * 0.5)
-            if fadeIn > 0.02 {
-                layer.setOpacityRamp(fromStartOpacity: 0,
-                                     toEndOpacity: opacity,
-                                     timeRange: CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 600),
-                                                            duration: CMTime(seconds: fadeIn, preferredTimescale: 600)))
+            if fadeIn > 0.02, let ramp = timeRange(from: clipStart, to: clipStart + fadeIn) {
+                layer.setOpacityRamp(fromStartOpacity: 0, toEndOpacity: opacity, timeRange: ramp)
             }
         }
 
+        // 淡出：终点必须和片段结尾是同一个 tick，否则会和淡入 ramp 叠上 1 tick
         let fadeOut = min(plan.item.properties.fadeOut, plan.timelineDuration * 0.5)
         if fadeOut > 0.02 {
-            let outStart = plan.item.startTime + plan.timelineDuration - fadeOut
-            layer.setOpacityRamp(fromStartOpacity: opacity,
-                                 toEndOpacity: 0,
-                                 timeRange: CMTimeRange(start: CMTime(seconds: outStart, preferredTimescale: 600),
-                                                        duration: CMTime(seconds: fadeOut, preferredTimescale: 600)))
+            let clipEnd = clipStart + plan.timelineDuration
+            if let ramp = timeRange(from: clipEnd - fadeOut, to: clipEnd) {
+                layer.setOpacityRamp(fromStartOpacity: opacity, toEndOpacity: 0, timeRange: ramp)
+            }
         }
         return layer
     }
@@ -604,12 +655,12 @@ enum CompositionBuilder {
                                               cur: ClipPlan,
                                               curTrack: AVMutableCompositionTrack,
                                               duration: Double,
-                                              renderSize: CGSize) -> AVMutableVideoCompositionInstruction {
-        let instruction = AVMutableVideoCompositionInstruction()
+                                              renderSize: CGSize) -> AVMutableVideoCompositionInstruction? {
         let startSeconds = cur.item.startTime
-        let range = CMTimeRange(start: CMTime(seconds: startSeconds, preferredTimescale: 600),
-                                duration: CMTime(seconds: duration, preferredTimescale: 600))
+        guard let range = timeRange(from: startSeconds, to: startSeconds + duration) else { return nil }
+        let instruction = AVMutableVideoCompositionInstruction()
         instruction.timeRange = range
+        let actual = CMTimeGetSeconds(range.duration)
 
         let outLayer = AVMutableVideoCompositionLayerInstruction(assetTrack: prevTrack)
         let inLayer = AVMutableVideoCompositionLayerInstruction(assetTrack: curTrack)
@@ -631,7 +682,7 @@ enum CompositionBuilder {
                                    outLayer: outLayer, inLayer: inLayer,
                                    renderSize: renderSize,
                                    start: startSeconds,
-                                   duration: duration)
+                                   duration: actual)
             instruction.layerInstructions = [outLayer, inLayer]
             return instruction
         }
@@ -645,13 +696,14 @@ enum CompositionBuilder {
             inLayer.setOpacityRamp(fromStartOpacity: 0, toEndOpacity: inOpacity, timeRange: range)
 
         case .fadeThroughBlack:
-            let half = duration / 2
-            outLayer.setOpacityRamp(fromStartOpacity: outOpacity, toEndOpacity: 0,
-                                    timeRange: CMTimeRange(start: range.start,
-                                                           duration: CMTime(seconds: half, preferredTimescale: 600)))
-            inLayer.setOpacityRamp(fromStartOpacity: 0, toEndOpacity: inOpacity,
-                                   timeRange: CMTimeRange(start: CMTime(seconds: startSeconds + half, preferredTimescale: 600),
-                                                          duration: CMTime(seconds: half, preferredTimescale: 600)))
+            // 前后两半共用同一个中点 tick，否则中间会漏一格全黑或叠一格
+            let half = startSeconds + actual / 2
+            if let first = timeRange(from: startSeconds, to: half) {
+                outLayer.setOpacityRamp(fromStartOpacity: outOpacity, toEndOpacity: 0, timeRange: first)
+            }
+            if let second = timeRange(from: half, to: startSeconds + actual) {
+                inLayer.setOpacityRamp(fromStartOpacity: 0, toEndOpacity: inOpacity, timeRange: second)
+            }
 
         case .slideLeft:
             let dx = renderSize.width
@@ -748,11 +800,11 @@ enum CompositionBuilder {
 
         var previous = state(at: start)
         for step in 1...steps {
-            let t = start + duration * Double(step) / Double(steps)
-            let current = state(at: t)
-            let from = CMTime(seconds: start + duration * Double(step - 1) / Double(steps), preferredTimescale: 600)
-            let range = CMTimeRange(start: from,
-                                    duration: CMTime(seconds: duration / Double(steps), preferredTimescale: 600))
+            let stepEnd = start + duration * Double(step) / Double(steps)
+            let current = state(at: stepEnd)
+            let stepStart = start + duration * Double(step - 1) / Double(steps)
+            // 相邻两段共用同一个边界 tick，否则段与段之间会漏缝或叠上
+            guard let range = timeRange(from: stepStart, to: stepEnd) else { continue }
 
             outLayer.setOpacityRamp(fromStartOpacity: previous.outAlpha,
                                     toEndOpacity: current.outAlpha,
