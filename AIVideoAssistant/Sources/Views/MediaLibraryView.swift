@@ -14,8 +14,20 @@ struct MediaLibraryView: View {
     @State private var grouped: Bool
     @State private var confirmRemove = false
     @State private var confirmCleanup = false
+    @State private var nameSheet: NameSheetState?
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 12), count: 4)
+
+    /// 新建 / 重命名集合共用同一个输入弹窗
+    private struct NameSheetState: Identifiable {
+        enum Kind {
+            case create(Set<UUID>)
+            case rename(UUID, String)
+        }
+
+        let id = UUID()
+        let kind: Kind
+    }
 
     /// 初始筛选条件只用于预览 / 截图验证，正常运行时是默认值
     init(initialQuery: MediaQuery = MediaQuery(), grouped: Bool = true) {
@@ -27,12 +39,23 @@ struct MediaLibraryView: View {
 
     private var usage: MediaUsage { appState.mediaUsage }
 
+    private var collections: [MediaCollection] { appState.mediaCollections }
+
+    private var collectionInfos: [CollectionInfo] {
+        MediaShelf.collectionInfos(collections, library: appState.mediaLibrary)
+    }
+
+    private var activeCollection: MediaCollection? {
+        guard let id = query.collectionID else { return nil }
+        return collections.first { $0.id == id }
+    }
+
     private var counts: MediaTypeCounts {
-        MediaShelf.counts(for: appState.mediaLibrary, query: query, usage: usage)
+        MediaShelf.counts(for: appState.mediaLibrary, query: query, usage: usage, collections: collections)
     }
 
     private var visible: [MediaAsset] {
-        MediaShelf.apply(query, to: appState.mediaLibrary, usage: usage)
+        MediaShelf.apply(query, to: appState.mediaLibrary, usage: usage, collections: collections)
     }
 
     private var sections: [MediaSection] {
@@ -56,6 +79,7 @@ struct MediaLibraryView: View {
             header
             VStack(alignment: .leading, spacing: 10) {
                 filterRow
+                collectionRow
                 content
             }
             .padding(16)
@@ -69,6 +93,27 @@ struct MediaLibraryView: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text(removeMessage)
+        }
+        .sheet(item: $nameSheet) { sheet in
+            switch sheet.kind {
+            case .create(let preset):
+                CollectionNameSheet(title: "新建素材集合") { name in
+                    let id = appState.createCollection(name: name, assetIDs: preset)
+                    query.collectionID = id
+                    nameSheet = nil
+                } onCancel: {
+                    nameSheet = nil
+                }
+            case .rename(let id, let current):
+                CollectionNameSheet(title: "重命名集合",
+                                    initialName: current,
+                                    confirmTitle: "保存") { name in
+                    appState.renameCollection(id, to: name)
+                    nameSheet = nil
+                } onCancel: {
+                    nameSheet = nil
+                }
+            }
         }
     }
 
@@ -214,6 +259,61 @@ struct MediaLibraryView: View {
         .help(grouped ? "已按类型分组，点一下平铺" : "平铺显示，点一下按类型分组")
     }
 
+    // MARK: - 集合行
+
+    private var collectionRow: some View {
+        HStack(spacing: 6) {
+            HStack(spacing: 4) {
+                Image(systemName: "folder")
+                    .font(.system(size: 10))
+                Text("集合")
+                    .font(.system(size: 10.5, weight: .semibold))
+            }
+            .foregroundStyle(Theme.text3)
+            .frame(width: 40, alignment: .leading)
+
+            if collectionInfos.isEmpty {
+                Text("把素材按场景 / 项目分组，点「新建」开始")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.text3)
+            } else {
+                ForEach(collectionInfos) { info in
+                    Chip(text: "\(info.name) \(info.count)",
+                         icon: "folder.fill",
+                         selected: query.collectionID == info.id) {
+                        query.collectionID = (query.collectionID == info.id) ? nil : info.id
+                    }
+                    .contextMenu {
+                        Button("重命名…") {
+                            nameSheet = NameSheetState(kind: .rename(info.id, info.name))
+                        }
+                        if !selected.isEmpty {
+                            Button("把已选的 \(selected.count) 个加入此集合") {
+                                appState.addToCollection(selected, collectionID: info.id)
+                            }
+                        }
+                        Divider()
+                        Button("删除集合") {
+                            if query.collectionID == info.id { query.collectionID = nil }
+                            appState.deleteCollection(info.id)
+                        }
+                    }
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            Button {
+                nameSheet = NameSheetState(kind: .create(selected))
+            } label: {
+                Label("新建", systemImage: "folder.badge.plus")
+                    .font(.system(size: 11.5, weight: .medium))
+            }
+            .buttonStyle(SoftButtonStyle(height: 26))
+            .help(selected.isEmpty ? "新建一个空集合" : "新建集合，并把已选的 \(selected.count) 个素材放进去")
+        }
+    }
+
     // MARK: - 筛选行
 
     private var filterRow: some View {
@@ -264,6 +364,17 @@ struct MediaLibraryView: View {
                         .font(.system(size: 11.5, weight: .medium))
                 }
                 .buttonStyle(SoftButtonStyle(height: 26))
+                if let collection = activeCollection {
+                    Button {
+                        appState.removeFromCollection(selected, collectionID: collection.id)
+                        selected.removeAll()
+                    } label: {
+                        Label("移出此集合", systemImage: "folder.badge.minus")
+                            .font(.system(size: 11.5, weight: .medium))
+                    }
+                    .buttonStyle(SoftButtonStyle(height: 26))
+                    .help("只从「\(collection.name)」里移出，素材仍留在素材库")
+                }
                 Button {
                     confirmRemove = true
                 } label: {
@@ -357,14 +468,28 @@ struct MediaLibraryView: View {
                         }
                         LazyVGrid(columns: columns, spacing: 12) {
                             ForEach(Array(section.assets.enumerated()), id: \.element.id) { index, asset in
-                                LibraryCard(asset: asset,
-                                            index: index,
-                                            selected: selected.contains(asset.id),
-                                            usageCount: usage.count(asset)) {
-                                    toggleSelection(asset)
-                                } onAdd: {
-                                    appState.addToTimeline(asset)
-                                }
+                                LibraryCard(
+                                    asset: asset,
+                                    index: index,
+                                    selected: selected.contains(asset.id),
+                                    usageCount: usage.count(asset),
+                                    onToggle: { toggleSelection(asset) },
+                                    onAdd: { appState.addToTimeline(asset) },
+                                    collections: collections,
+                                    onToggleCollection: { collectionID in
+                                        if appState.collection(collectionID)?.contains(asset.id) == true {
+                                            appState.removeFromCollection([asset.id], collectionID: collectionID)
+                                        } else {
+                                            appState.addToCollection([asset.id], collectionID: collectionID)
+                                        }
+                                    },
+                                    onCreateCollection: {
+                                        nameSheet = NameSheetState(kind: .create([asset.id]))
+                                    },
+                                    onRemove: {
+                                        appState.removeMedia(ids: [asset.id])
+                                    }
+                                )
                             }
                         }
                     }
@@ -375,11 +500,17 @@ struct MediaLibraryView: View {
     }
 
     private var emptyHintText: String {
+        // 空集合是最常见的「怎么什么都没有」，单独说清楚
+        if let collection = activeCollection, collection.assetIDs.isEmpty,
+           query.search.isEmpty, query.type == nil, !query.unusedOnly {
+            return "「\(collection.name)」还是空的，右键素材卡片就能加进来"
+        }
         var parts: [String] = []
+        if let collection = activeCollection { parts.append("集合「\(collection.name)」") }
         if !query.search.isEmpty { parts.append("关键词「\(query.search)」") }
         if let type = query.type { parts.append(type.label) }
         if query.unusedOnly { parts.append("只看未使用") }
-        return parts.isEmpty ? "试试换个关键词" : parts.joined(separator: " · ") + " 下没有结果"
+        return parts.isEmpty ? "试试换个关键词" : parts.joined(separator: " + ") + " 下没有结果"
     }
 
     private func sectionHeader(type: MediaType, count: Int) -> some View {
@@ -414,6 +545,7 @@ struct MediaLibraryView: View {
         query.search = ""
         query.type = nil
         query.unusedOnly = false
+        query.collectionID = nil
     }
 }
 
@@ -427,6 +559,11 @@ struct LibraryCard: View {
     var usageCount: Int = 0
     let onToggle: () -> Void
     let onAdd: () -> Void
+    /// 右键菜单用：当前有哪些集合、以及三个操作回调
+    var collections: [MediaCollection] = []
+    var onToggleCollection: (UUID) -> Void = { _ in }
+    var onCreateCollection: () -> Void = {}
+    var onRemove: () -> Void = {}
 
     @State private var hovering = false
 
@@ -507,6 +644,31 @@ struct LibraryCard: View {
         }
         .onTapGesture(count: 2) {
             onAdd()
+        }
+        .contextMenu {
+            Button("加入时间线末尾") { onAdd() }
+            Divider()
+            if collections.isEmpty {
+                Button("新建集合并加入…") { onCreateCollection() }
+            } else {
+                Menu("加入集合") {
+                    ForEach(collections) { collection in
+                        Button {
+                            onToggleCollection(collection.id)
+                        } label: {
+                            Label(collection.name,
+                                  systemImage: collection.contains(asset.id) ? "checkmark" : "folder")
+                        }
+                    }
+                    Divider()
+                    Button("新建集合并加入…") { onCreateCollection() }
+                }
+            }
+            Divider()
+            Button("在访达中显示") {
+                NSWorkspace.shared.activateFileViewerSelecting([asset.url])
+            }
+            Button("移出素材库", role: .destructive) { onRemove() }
         }
         .help(helpText)
     }

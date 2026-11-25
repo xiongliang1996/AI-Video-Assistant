@@ -50,6 +50,8 @@ final class AppState: ObservableObject {
 
     // 素材与时间线
     @Published var mediaLibrary: [MediaAsset] = []
+    /// 素材库里的自定义集合（分文件夹管理）
+    @Published var mediaCollections: [MediaCollection] = []
     @Published var timeline: [TimelineItem] = []
     @Published var selectedItemIDs: Set<UUID> = []
 
@@ -136,10 +138,11 @@ final class AppState: ObservableObject {
             self.currentProject = snapshot.project
             self.timeline = snapshot.timeline
             self.mediaLibrary = snapshot.media.map { ref in
-                let asset = MediaAsset(url: URL(fileURLWithPath: ref.path))
+                let asset = MediaAsset(url: URL(fileURLWithPath: ref.path), id: ref.id)
                 asset.name = ref.name
                 return asset
             }
+            self.mediaCollections = MediaShelf.sanitized(snapshot.collections, library: self.mediaLibrary)
             self.currentTime = snapshot.currentTime
             self.selectedItemID = snapshot.selectedItemID
             self.projects = summaries.map(\.project)
@@ -372,10 +375,11 @@ final class AppState: ObservableObject {
         currentProject = snapshot.project
         timeline = snapshot.timeline
         mediaLibrary = snapshot.media.map { ref in
-            let asset = MediaAsset(url: URL(fileURLWithPath: ref.path))
+            let asset = MediaAsset(url: URL(fileURLWithPath: ref.path), id: ref.id)
             asset.name = ref.name
             return asset
         }
+        mediaCollections = MediaShelf.sanitized(snapshot.collections, library: mediaLibrary)
         selectedItemID = snapshot.selectedItemID
         currentTime = snapshot.currentTime
         isPlaying = false
@@ -419,6 +423,12 @@ final class AppState: ObservableObject {
             .sink { [weak self] _ in self?.saveNow() }
             .store(in: &cancellables)
 
+        $mediaCollections
+            .dropFirst()
+            .debounce(for: .seconds(1.2), scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in self?.saveNow() }
+            .store(in: &cancellables)
+
         $currentProject
             .dropFirst()
             .debounce(for: .seconds(0.4), scheduler: DispatchQueue.main)
@@ -435,7 +445,8 @@ final class AppState: ObservableObject {
             media: mediaLibrary.map { MediaRef(id: $0.id, path: $0.url.path, name: $0.name, type: $0.type) },
             timeline: timeline,
             currentTime: currentTime,
-            selectedItemID: selectedItemID
+            selectedItemID: selectedItemID,
+            collections: mediaCollections
         )
 
         do {
@@ -461,7 +472,8 @@ final class AppState: ObservableObject {
             media: mediaLibrary.map { MediaRef(id: $0.id, path: $0.url.path, name: $0.name, type: $0.type) },
             timeline: timeline,
             currentTime: currentTime,
-            selectedItemID: selectedItemID
+            selectedItemID: selectedItemID,
+            collections: mediaCollections
         )
         do {
             let data = try JSONEncoder.projectEncoder.encode(snapshot)
@@ -635,6 +647,7 @@ final class AppState: ObservableObject {
             HoverPreviewStore.shared.invalidate(url: asset.url)
         }
         mediaLibrary.removeAll { ids.contains($0.id) }
+        mediaCollections = MediaShelf.sanitized(mediaCollections, library: mediaLibrary)
         if used > 0 {
             notify("已移出 \(removed.count) 个素材，其中 \(used) 个仍被时间线使用")
         } else {
@@ -652,8 +665,84 @@ final class AppState: ObservableObject {
             return 0
         }
         mediaLibrary.removeAll { ids.contains($0.id) }
+        mediaCollections = MediaShelf.sanitized(mediaCollections, library: mediaLibrary)
         notify("已移出 \(ids.count) 个未使用素材（文件仍在磁盘上）")
         return ids.count
+    }
+
+    // MARK: - 素材集合
+
+    func collection(_ id: UUID) -> MediaCollection? {
+        mediaCollections.first { $0.id == id }
+    }
+
+    /// 素材被哪些集合收录（卡片右键菜单打勾用）
+    func collectionIDs(containing assetID: UUID) -> [UUID] {
+        mediaCollections.filter { $0.contains(assetID) }.map(\.id)
+    }
+
+    /// 新建集合，返回新集合 id。重名自动加序号
+    @discardableResult
+    func createCollection(name: String, assetIDs: Set<UUID> = []) -> UUID {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = trimmed.isEmpty ? "未命名集合" : trimmed
+        var finalName = base
+        var suffix = 2
+        while mediaCollections.contains(where: { $0.name == finalName }) {
+            finalName = "\(base) \(suffix)"
+            suffix += 1
+        }
+
+        var collection = MediaCollection(name: finalName)
+        MediaShelf.add(orderedAssetIDs(assetIDs), to: &collection)
+        mediaCollections.append(collection)
+        notify("已创建集合「\(finalName)」")
+        return collection.id
+    }
+
+    func renameCollection(_ id: UUID, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let index = mediaCollections.firstIndex(where: { $0.id == id }) else { return }
+        mediaCollections[index].name = trimmed
+    }
+
+    /// 删除集合只删分组关系，素材本身还在素材库里
+    func deleteCollection(_ id: UUID) {
+        guard let index = mediaCollections.firstIndex(where: { $0.id == id }) else { return }
+        let name = mediaCollections[index].name
+        mediaCollections.remove(at: index)
+        notify("已删除集合「\(name)」，素材仍保留在素材库")
+    }
+
+    @discardableResult
+    func addToCollection(_ assetIDs: Set<UUID>, collectionID: UUID) -> Int {
+        guard let index = mediaCollections.firstIndex(where: { $0.id == collectionID }) else { return 0 }
+        let added = MediaShelf.add(orderedAssetIDs(assetIDs), to: &mediaCollections[index])
+        let name = mediaCollections[index].name
+        if added > 0 {
+            notify("已把 \(added) 个素材加入「\(name)」")
+        } else {
+            notify("这些素材已经在「\(name)」里了")
+        }
+        return added
+    }
+
+    @discardableResult
+    func removeFromCollection(_ assetIDs: Set<UUID>, collectionID: UUID) -> Int {
+        guard let index = mediaCollections.firstIndex(where: { $0.id == collectionID }) else { return 0 }
+        let before = mediaCollections[index].assetIDs.count
+        mediaCollections[index].assetIDs.removeAll { assetIDs.contains($0) }
+        let removed = before - mediaCollections[index].assetIDs.count
+        if removed > 0 {
+            notify("已从「\(mediaCollections[index].name)」移出 \(removed) 个素材")
+        }
+        return removed
+    }
+
+    /// 按素材库顺序排，避免 Set 的随机顺序让集合成员次序乱跳
+    private func orderedAssetIDs(_ ids: Set<UUID>) -> [UUID] {
+        mediaLibrary.map(\.id).filter { ids.contains($0) }
     }
 
     func addSubtitle(_ entry: SubtitleEntry,

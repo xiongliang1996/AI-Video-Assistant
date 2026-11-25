@@ -125,7 +125,7 @@ enum MediaType: String, Codable {
 }
 
 final class MediaAsset: ObservableObject, Identifiable {
-    let id = UUID()
+    let id: UUID
     let url: URL
     let type: MediaType
 
@@ -135,7 +135,10 @@ final class MediaAsset: ObservableObject, Identifiable {
     @Published var thumbnail: NSImage?
     @Published var isLoading = false
 
-    init(url: URL) {
+    /// id 可指定：项目重新加载时沿用文件里的 id，
+    /// 否则每次启动都会换一批 UUID，集合成员与片段引用都会对不上
+    init(url: URL, id: UUID = UUID()) {
+        self.id = id
         self.url = url
         self.type = MediaType.detect(from: url)
         self.name = url.lastPathComponent

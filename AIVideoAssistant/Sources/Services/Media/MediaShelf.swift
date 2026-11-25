@@ -45,6 +45,8 @@ struct MediaQuery: Equatable {
     var search: String = ""
     var type: MediaType?
     var unusedOnly: Bool = false
+    /// 只看某个素材集合里的成员
+    var collectionID: UUID?
     var sort: MediaSort = .added
     var descending: Bool = false
 
@@ -57,7 +59,7 @@ struct MediaQuery: Equatable {
     }
 
     var isFiltering: Bool {
-        !keywords.isEmpty || type != nil || unusedOnly
+        !keywords.isEmpty || type != nil || unusedOnly || collectionID != nil
     }
 }
 
@@ -78,8 +80,14 @@ struct MediaUsage {
     var isEmpty: Bool { byID.isEmpty && byPath.isEmpty }
 }
 
-// MARK: - 分组结果
+/// 集合胶囊上显示的信息（数量只算库里还在的成员）
+struct CollectionInfo: Identifiable, Hashable {
+    let id: UUID
+    let name: String
+    let count: Int
+}
 
+// MARK: - 分组结果
 struct MediaSection: Identifiable {
     /// nil 表示不分组（平铺）
     let type: MediaType?
@@ -146,11 +154,14 @@ enum MediaShelf {
     /// 按当前条件过滤（忽略类型筛选），用来算每个类型胶囊上的数字
     static func counts(for assets: [MediaAsset],
                        query: MediaQuery,
-                       usage: MediaUsage) -> MediaTypeCounts {
+                       usage: MediaUsage,
+                       collections: [MediaCollection] = []) -> MediaTypeCounts {
+        let members = memberIDs(query.collectionID, in: collections)
         var result = MediaTypeCounts()
         for asset in assets {
             guard matches(asset, keywords: query.keywords) else { continue }
             if query.unusedOnly, usage.count(asset) > 0 { continue }
+            if let members, !members.contains(asset.id) { continue }
             switch asset.type {
             case .video: result.video += 1
             case .audio: result.audio += 1
@@ -163,14 +174,60 @@ enum MediaShelf {
     /// 过滤 + 排序
     static func apply(_ query: MediaQuery,
                       to assets: [MediaAsset],
-                      usage: MediaUsage = .empty) -> [MediaAsset] {
+                      usage: MediaUsage = .empty,
+                      collections: [MediaCollection] = []) -> [MediaAsset] {
+        let members = memberIDs(query.collectionID, in: collections)
         let result = assets.filter { asset in
             guard matches(asset, keywords: query.keywords) else { return false }
             if let type = query.type, asset.type != type { return false }
             if query.unusedOnly, usage.count(asset) > 0 { return false }
+            if let members, !members.contains(asset.id) { return false }
             return true
         }
         return sorted(result, by: query.sort, descending: query.descending)
+    }
+
+    // MARK: - 集合
+
+    /// 选中的集合里有哪些素材；没选集合（或集合已被删）时返回 nil 表示不限制
+    static func memberIDs(_ collectionID: UUID?, in collections: [MediaCollection]) -> Set<UUID>? {
+        guard let collectionID,
+              let collection = collections.first(where: { $0.id == collectionID }) else { return nil }
+        return Set(collection.assetIDs)
+    }
+
+    /// 集合列表上要显示的数字：只算素材库里还在的成员（陈旧 id 不计）
+    static func collectionInfos(_ collections: [MediaCollection],
+                                library: [MediaAsset]) -> [CollectionInfo] {
+        let alive = Set(library.map(\.id))
+        return collections.map { collection in
+            CollectionInfo(id: collection.id,
+                           name: collection.name,
+                           count: collection.assetIDs.filter { alive.contains($0) }.count)
+        }
+    }
+
+    /// 去掉已经不在素材库里的成员，避免集合越攒越脏
+    static func sanitized(_ collections: [MediaCollection],
+                          library: [MediaAsset]) -> [MediaCollection] {
+        let alive = Set(library.map(\.id))
+        return collections.map { collection in
+            var copy = collection
+            copy.assetIDs = collection.assetIDs.filter { alive.contains($0) }
+            return copy
+        }
+    }
+
+    /// 把素材加进集合：已在里面的跳过，返回实际新增的数量
+    @discardableResult
+    static func add(_ assetIDs: [UUID],
+                    to collection: inout MediaCollection) -> Int {
+        var added = 0
+        for id in assetIDs where !collection.assetIDs.contains(id) {
+            collection.assetIDs.append(id)
+            added += 1
+        }
+        return added
     }
 
     /// 稳定排序：比较结果相等时保持原有（导入）顺序

@@ -14,6 +14,38 @@ struct MediaRef: Codable, Hashable {
     var type: MediaType
 }
 
+/// 素材集合：素材库里的自定义分组（一个素材可以同时属于多个集合）
+struct MediaCollection: Identifiable, Hashable, Codable {
+    var id: UUID
+    var name: String
+    /// 按加入顺序保存，方便以后做手动排序
+    var assetIDs: [UUID]
+    var createdAt: Date
+
+    init(id: UUID = UUID(), name: String, assetIDs: [UUID] = [], createdAt: Date = Date()) {
+        self.id = id
+        self.name = name
+        self.assetIDs = assetIDs
+        self.createdAt = createdAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, assetIDs, createdAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "未命名集合"
+        assetIDs = try c.decodeIfPresent([UUID].self, forKey: .assetIDs) ?? []
+        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+    }
+
+    func contains(_ assetID: UUID) -> Bool {
+        assetIDs.contains(assetID)
+    }
+}
+
 struct ProjectSnapshot: Codable {
     var version: Int
     var project: VideoProject
@@ -21,18 +53,37 @@ struct ProjectSnapshot: Codable {
     var timeline: [TimelineItem]
     var currentTime: Double
     var selectedItemID: UUID?
+    /// v1.13 新增：老项目文件里没有这个字段，解码时补空数组
+    var collections: [MediaCollection]
 
     init(project: VideoProject,
          media: [MediaRef] = [],
          timeline: [TimelineItem] = [],
          currentTime: Double = 0,
-         selectedItemID: UUID? = nil) {
+         selectedItemID: UUID? = nil,
+         collections: [MediaCollection] = []) {
         self.version = 1
         self.project = project
         self.media = media
         self.timeline = timeline
         self.currentTime = currentTime
         self.selectedItemID = selectedItemID
+        self.collections = collections
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version, project, media, timeline, currentTime, selectedItemID, collections
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        project = try c.decode(VideoProject.self, forKey: .project)
+        media = try c.decodeIfPresent([MediaRef].self, forKey: .media) ?? []
+        timeline = try c.decodeIfPresent([TimelineItem].self, forKey: .timeline) ?? []
+        currentTime = try c.decodeIfPresent(Double.self, forKey: .currentTime) ?? 0
+        selectedItemID = try c.decodeIfPresent(UUID.self, forKey: .selectedItemID)
+        collections = try c.decodeIfPresent([MediaCollection].self, forKey: .collections) ?? []
     }
 }
 
