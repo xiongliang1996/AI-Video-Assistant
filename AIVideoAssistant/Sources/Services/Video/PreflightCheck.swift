@@ -150,6 +150,9 @@ enum PreflightCheck {
 
         let visual = items.filter { ($0.type == .video || $0.type == .aiGenerated) }
             .sorted { $0.startTime < $1.startTime }
+        // V1 是主画面、V2 是画中画，两者互不抢位置，很多检查要分开算
+        let mainVisual = visual.filter { !$0.isOverlay }
+        let overlayVisual = visual.filter { $0.isOverlay }
         let audios = items.filter { $0.type == .audio }.sorted { $0.startTime < $1.startTime }
         let subtitles = items.filter { $0.type == .subtitle || $0.type == .text }
             .sorted { $0.startTime < $1.startTime }
@@ -162,6 +165,11 @@ enum PreflightCheck {
             issues.append(PreflightIssue(severity: .error,
                                          title: "时间线上没有视频片段",
                                          detail: "只有音频和字幕的话导不出画面，先把视频拖到 V1 轨道。",
+                                         clipName: nil))
+        } else if mainVisual.isEmpty {
+            issues.append(PreflightIssue(severity: .info,
+                                         title: "V1 主画面是空的",
+                                         detail: "时间线上只有画中画，成片会是一块黑底上浮着画中画。",
                                          clipName: nil))
         }
 
@@ -205,9 +213,9 @@ enum PreflightCheck {
             }
         }
 
-        // W1 转场不生效
-        for (index, clip) in visual.enumerated() where clip.transition != .none {
-            let previous = index > 0 ? visual[index - 1] : nil
+        // W1 转场不生效（画中画不参与转场，跳过）
+        for (index, clip) in mainVisual.enumerated() where clip.transition != .none {
+            let previous = index > 0 ? mainVisual[index - 1] : nil
             let assetDuration = previous.flatMap { info(for: $0)?.duration }
             let status = TimelineLayout.transitionStatus(for: clip,
                                                          previous: previous,
@@ -234,8 +242,29 @@ enum PreflightCheck {
                 }
             }
         }
-        overlaps(visual, label: "视频轨")
+        overlaps(mainVisual, label: "V1 视频轨")
+        overlaps(overlayVisual, label: "V2 画中画轨")
         overlaps(audios, label: "音频轨")
+
+        // W8 画中画压在黑场上
+        for clip in overlayVisual {
+            let covered = mainVisual.contains { $0.startTime < clip.endTime - 0.01 && $0.endTime > clip.startTime + 0.01 }
+            guard !covered else { continue }
+            issues.append(PreflightIssue(
+                severity: .info,
+                title: "「\(clip.name)」下面没有主画面",
+                detail: "这段画中画所在的时间段 V1 是空的，背景会是黑的。",
+                clipName: clip.name))
+        }
+
+        // W9 画中画太小
+        for clip in overlayVisual where clip.properties.pip.widthRatio < 0.15 {
+            issues.append(PreflightIssue(
+                severity: .info,
+                title: "「\(clip.name)」画中画偏小",
+                detail: String(format: "只占画幅宽度的 %.0f%%，手机上看不清内容。", clip.properties.pip.widthRatio * 100),
+                clipName: clip.name))
+        }
 
         // W3/W4/W5 字幕
         for clip in subtitles {
@@ -271,11 +300,11 @@ enum PreflightCheck {
             }
         }
 
-        // W6 画幅不一致
+        // W6 画幅不一致（画中画保持自身比例，不参与这条）
         if renderSize.width > 1, renderSize.height > 1 {
             let renderAspect = renderSize.width / renderSize.height
             var reported = Set<String>()
-            for clip in visual {
+            for clip in mainVisual {
                 guard let asset = info(for: clip),
                       asset.naturalSize.width > 1, asset.naturalSize.height > 1 else { continue }
                 let sourceAspect = asset.naturalSize.width / asset.naturalSize.height
@@ -301,16 +330,16 @@ enum PreflightCheck {
             }
         }
 
-        // I1 画面空隙
-        if visual.count > 1 {
-            for index in 1..<visual.count {
-                let gap = visual[index].startTime - visual[index - 1].endTime
+        // I1 画面空隙（只看主画面：画中画本身不负责铺满画幅）
+        if mainVisual.count > 1 {
+            for index in 1..<mainVisual.count {
+                let gap = mainVisual[index].startTime - mainVisual[index - 1].endTime
                 if gap > noticeableGap {
                     issues.append(PreflightIssue(
                         severity: .info,
                         title: String(format: "%.2f s 的画面空隙", gap),
                         detail: "空隙会渲染成黑场。如果不是故意的，可以用「吸附到上一段」贴上去。",
-                        clipName: visual[index].name))
+                        clipName: mainVisual[index].name))
                 }
             }
         }

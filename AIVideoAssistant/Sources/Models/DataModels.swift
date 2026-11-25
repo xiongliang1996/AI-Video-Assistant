@@ -519,6 +519,79 @@ enum AnimatableProperty: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - 画中画
+
+/// 画中画贴在画幅的哪个角
+enum PiPPosition: String, Codable, CaseIterable, Hashable {
+    case topLeading
+    case topTrailing
+    case bottomLeading
+    case bottomTrailing
+    case center
+
+    var label: String {
+        switch self {
+        case .topLeading: return "左上"
+        case .topTrailing: return "右上"
+        case .bottomLeading: return "左下"
+        case .bottomTrailing: return "右下"
+        case .center: return "居中"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .topLeading: return "arrow.up.left"
+        case .topTrailing: return "arrow.up.right"
+        case .bottomLeading: return "arrow.down.left"
+        case .bottomTrailing: return "arrow.down.right"
+        case .center: return "dot.circle"
+        }
+    }
+}
+
+/// 画中画的几何：只描述「多大、放哪儿」，不涉及素材本身。
+/// 数值都用占画幅的比例表示，换导出分辨率时不用重设。
+struct PiPStyle: Codable, Hashable {
+    /// 画中画宽度占画幅宽度的比例
+    var widthRatio: Double = 0.32
+    var position: PiPPosition = .bottomTrailing
+    /// 贴边留白，占画幅宽度的比例
+    var margin: Double = 0.03
+
+    /// 允许的范围，界面滑杆和引擎都按这个夹一次
+    static let widthRange: ClosedRange<Double> = 0.1...0.75
+    static let marginRange: ClosedRange<Double> = 0...0.12
+
+    init() {}
+
+    enum CodingKeys: String, CodingKey { case widthRatio, position, margin }
+
+    /// 旧项目文件没有这几个字段，缺了就按默认值
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        widthRatio = try c.decodeIfPresent(Double.self, forKey: .widthRatio) ?? 0.32
+        position = try c.decodeIfPresent(PiPPosition.self, forKey: .position) ?? .bottomTrailing
+        margin = try c.decodeIfPresent(Double.self, forKey: .margin) ?? 0.03
+    }
+
+    /// 夹到合法区间，防止滑杆外的数值把 transform 算成 NaN 或飞出画幅
+    var sanitized: PiPStyle {
+        var copy = self
+        copy.widthRatio = min(max(widthRatio, PiPStyle.widthRange.lowerBound),
+                              PiPStyle.widthRange.upperBound)
+        copy.margin = min(max(margin, PiPStyle.marginRange.lowerBound),
+                          PiPStyle.marginRange.upperBound)
+        if !copy.widthRatio.isFinite { copy.widthRatio = 0.32 }
+        if !copy.margin.isFinite { copy.margin = 0.03 }
+        return copy
+    }
+
+    var summary: String {
+        "\(Int((widthRatio * 100).rounded()))% · \(position.label)"
+    }
+}
+
 struct ItemProperties: Codable, Hashable {
     var scale: Double = 1.0
     var rotation: Double = 0
@@ -542,6 +615,9 @@ struct ItemProperties: Codable, Hashable {
     /// 关键帧：key = AnimatableProperty.rawValue，时间相对片段起点
     var keyframes: [String: [Keyframe]] = [:]
 
+    /// 画中画几何（只有落在 V2 层的视频片段才用得上）
+    var pip: PiPStyle = PiPStyle()
+
     init() {}
 
     // 手写解码：新增字段在旧存档里缺失时回落到默认值
@@ -549,7 +625,7 @@ struct ItemProperties: Codable, Hashable {
         case scale, rotation, opacity, volume, speed, fadeIn, fadeOut
         case textContent, fontSize
         case textColorHex, textBoxOpacity, textOffsetY, textBold
-        case keyframes
+        case keyframes, pip
     }
 
     init(from decoder: Decoder) throws {
@@ -568,6 +644,7 @@ struct ItemProperties: Codable, Hashable {
         textOffsetY = try c.decodeIfPresent(Double.self, forKey: .textOffsetY) ?? 0.12
         textBold = try c.decodeIfPresent(Bool.self, forKey: .textBold) ?? true
         keyframes = try c.decodeIfPresent([String: [Keyframe]].self, forKey: .keyframes) ?? [:]
+        pip = try c.decodeIfPresent(PiPStyle.self, forKey: .pip) ?? PiPStyle()
     }
 
     // MARK: 关键帧
@@ -693,12 +770,27 @@ struct TimelineItem: Identifiable, Hashable, Codable {
         }
     }
 
+    /// 视频第二层（V2）上的片段是画中画：缩小浮在主画面之上，不占满画幅。
+    /// 音频 / 字幕的层号是另一套含义，别混用。
+    var isOverlay: Bool {
+        trackKind == .video && trackLane >= 1
+    }
+
     /// 该类型轨道最多支持几层
     static func laneCount(for kind: TimelineTrack) -> Int {
         switch kind {
-        case .video: return 1
+        case .video: return 2
         case .audio: return 2
         case .subtitle: return 1
+        }
+    }
+
+    /// 层号的显示名：视频 V1/V2，音频 A1/A2
+    static func laneName(for kind: TimelineTrack, lane: Int) -> String {
+        switch kind {
+        case .video: return "V\(lane + 1)"
+        case .audio: return "A\(lane + 1)"
+        case .subtitle: return "S\(lane + 1)"
         }
     }
 

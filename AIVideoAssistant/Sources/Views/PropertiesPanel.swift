@@ -33,6 +33,10 @@ struct PropertiesPanel: View {
                     VStack(alignment: .leading, spacing: 0) {
                         basics(item)
                         divider
+                        if item.isOverlay {
+                            pip(item)
+                            divider
+                        }
                         transform(item)
                         divider
                         audio(item)
@@ -177,7 +181,7 @@ struct PropertiesPanel: View {
                         .foregroundStyle(Theme.text2)
                         .frame(width: 52, alignment: .leading)
                     SegmentedControl(options: Array(0..<TimelineItem.laneCount(for: item.trackKind)),
-                                     title: { "A\($0 + 1)" },
+                                     title: { TimelineItem.laneName(for: item.trackKind, lane: $0) },
                                      selection: Binding(
                                         get: { item.trackLane },
                                         set: { appState.moveToLane(item, lane: $0) }
@@ -188,11 +192,100 @@ struct PropertiesPanel: View {
         }
     }
 
+    /// 画中画：只有落在 V2 层的视频片段才显示这一组
+    private func pip(_ item: TimelineItem) -> some View {
+        let style = item.properties.pip
+        return VStack(alignment: .leading, spacing: 0) {
+            groupHeader("rectangle.on.rectangle", "画中画")
+
+            SliderRow(label: "尺寸",
+                      value: Binding(
+                        get: { item.properties.pip.widthRatio },
+                        set: { newValue in
+                            var copy = item
+                            copy.properties.pip.widthRatio = newValue
+                            appState.updateItem(copy, recordUndo: true)
+                        }
+                      ),
+                      range: PiPStyle.widthRange,
+                      display: "\(Int((style.widthRatio * 100).rounded()))%")
+
+            SliderRow(label: "留白",
+                      value: Binding(
+                        get: { item.properties.pip.margin },
+                        set: { newValue in
+                            var copy = item
+                            copy.properties.pip.margin = newValue
+                            appState.updateItem(copy, recordUndo: true)
+                        }
+                      ),
+                      range: PiPStyle.marginRange,
+                      display: "\(Int((style.margin * 100).rounded()))%")
+
+            Text("位置")
+                .font(.system(size: 11.5))
+                .foregroundStyle(Theme.text2)
+                .padding(.top, 6)
+                .padding(.bottom, 5)
+
+            VStack(spacing: 4) {
+                HStack(spacing: 4) {
+                    positionButton(item, .topLeading)
+                    positionButton(item, .topTrailing)
+                }
+                HStack(spacing: 4) {
+                    positionButton(item, .bottomLeading)
+                    positionButton(item, .bottomTrailing)
+                }
+                positionButton(item, .center, fullWidth: true)
+            }
+
+            Text("画中画浮在主画面之上，自身不做转场。拖回 V1 即恢复为主画面。")
+                .font(.system(size: 10.5))
+                .foregroundStyle(Theme.text3)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 8)
+        }
+    }
+
+    private func positionButton(_ item: TimelineItem,
+                                _ position: PiPPosition,
+                                fullWidth: Bool = false) -> some View {
+        let active = item.properties.pip.position == position
+        return Button {
+            var copy = item
+            copy.properties.pip.position = position
+            appState.updateItem(copy, recordUndo: true)
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: position.icon)
+                    .font(.system(size: 9.5))
+                Text(position.label)
+                    .font(.system(size: 11))
+            }
+            .frame(maxWidth: fullWidth ? .infinity : nil)
+            .frame(height: 24)
+            .frame(minWidth: fullWidth ? 0 : 84)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(active ? Theme.accent.opacity(0.16) : Theme.panel)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(active ? Theme.accent.opacity(0.55) : Theme.line, lineWidth: 1)
+                    )
+            )
+            .foregroundStyle(active ? Theme.accent : Theme.text2)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
     private func transform(_ item: TimelineItem) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             groupHeader("arrow.up.left.and.arrow.down.right", "变换")
 
-            SliderRow(label: "缩放",
+            // 画中画的「缩放」是尺寸的倍率，标签写清楚免得和上面那栏混淆
+            SliderRow(label: item.isOverlay ? "缩放×" : "缩放",
                       value: prop(item, \.scale),
                       range: 0.1...3.0,
                       display: "\(Int(item.properties.scale * 100))%")
@@ -243,63 +336,16 @@ struct PropertiesPanel: View {
         VStack(alignment: .leading, spacing: 0) {
             groupHeader("sparkles", "转场")
 
-            HStack(spacing: 8) {
-                Text("类型")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(Theme.text2)
-                    .frame(width: 52, alignment: .leading)
-
-                Menu {
-                    ForEach(TransitionType.allCases, id: \.self) { type in
-                        Button {
-                            var copy = item
-                            copy.transition = type
-                            if type == .none { copy.transitionDuration = 0 }
-                            else if copy.transitionDuration <= 0 { copy.transitionDuration = 0.6 }
-                            appState.updateItem(copy, recordUndo: true)
-                        } label: {
-                            if item.transition == type {
-                                Label(type.label, systemImage: "checkmark")
-                            } else {
-                                Text(type.label)
-                            }
-                        }
-                    }
-                } label: {
-                    FieldBox {
-                        HStack(spacing: 5) {
-                            Image(systemName: item.transition.icon)
-                                .font(.system(size: 9.5))
-                                .foregroundStyle(item.transition == .none ? Theme.text3 : Theme.accent)
-                            Text(item.transition.label)
-                                .foregroundStyle(Theme.text)
-                                .lineLimit(1)
-                            Spacer(minLength: 0)
-                            Image(systemName: "chevron.down")
-                                .font(.system(size: 9))
-                                .foregroundStyle(Theme.text3)
-                        }
-                    }
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-            }
-            .frame(height: 27)
-
-            if item.transition != .none {
-                SliderRow(label: "过渡时长",
-                          value: Binding(
-                            get: { item.transitionDuration },
-                            set: { newValue in
-                                var copy = item
-                                copy.transitionDuration = newValue
-                                appState.updateItem(copy, recordUndo: true)
-                            }
-                          ),
-                          range: 0.15...1.5,
-                          display: String(format: "%.1f s", item.transitionDuration))
-
-                transitionStatusRow(item)
+            if item.isOverlay {
+                // 画中画只做「浮在上面」，不参与转场；硬要给它做交叉溶解
+                // 会把主画面的合成指令切碎，收益为零
+                Text("画中画不参与转场。需要淡入淡出请调下面的淡入 / 淡出或关键帧。")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.text3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, 4)
+            } else {
+                transitionControls(item)
             }
 
             groupHeader("circle.dotted", "淡入淡出")
@@ -313,6 +359,69 @@ struct PropertiesPanel: View {
                       value: prop(item, \.fadeOut),
                       range: 0...2,
                       display: String(format: "%.1f s", item.properties.fadeOut))
+        }
+    }
+
+    /// 转场类型 + 过渡时长（画中画不显示这一组）
+    @ViewBuilder
+    private func transitionControls(_ item: TimelineItem) -> some View {
+        HStack(spacing: 8) {
+            Text("类型")
+                .font(.system(size: 11.5))
+                .foregroundStyle(Theme.text2)
+                .frame(width: 52, alignment: .leading)
+
+            Menu {
+                ForEach(TransitionType.allCases, id: \.self) { type in
+                    Button {
+                        var copy = item
+                        copy.transition = type
+                        if type == .none { copy.transitionDuration = 0 }
+                        else if copy.transitionDuration <= 0 { copy.transitionDuration = 0.6 }
+                        appState.updateItem(copy, recordUndo: true)
+                    } label: {
+                        if item.transition == type {
+                            Label(type.label, systemImage: "checkmark")
+                        } else {
+                            Text(type.label)
+                        }
+                    }
+                }
+            } label: {
+                FieldBox {
+                    HStack(spacing: 5) {
+                        Image(systemName: item.transition.icon)
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(item.transition == .none ? Theme.text3 : Theme.accent)
+                        Text(item.transition.label)
+                            .foregroundStyle(Theme.text)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9))
+                            .foregroundStyle(Theme.text3)
+                    }
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+        }
+        .frame(height: 27)
+
+        if item.transition != .none {
+            SliderRow(label: "过渡时长",
+                      value: Binding(
+                        get: { item.transitionDuration },
+                        set: { newValue in
+                            var copy = item
+                            copy.transitionDuration = newValue
+                            appState.updateItem(copy, recordUndo: true)
+                        }
+                      ),
+                      range: 0.15...1.5,
+                      display: String(format: "%.1f s", item.transitionDuration))
+
+            transitionStatusRow(item)
         }
     }
 

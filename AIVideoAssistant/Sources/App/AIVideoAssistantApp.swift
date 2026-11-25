@@ -13,7 +13,7 @@ struct AIVideoAssistantApp: App {
         WindowGroup {
             MainWindowView()
                 .environmentObject(appState)
-                .frame(minWidth: 1180, minHeight: 760)
+                .frame(minWidth: 1180, minHeight: 800)
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified(showsTitle: true))

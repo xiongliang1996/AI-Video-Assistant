@@ -60,6 +60,7 @@ struct TimelineView: View {
                                 .gesture(scrubGesture)
 
                             track(for: .video, lane: 0)
+                            track(for: .video, lane: 1)
                             track(for: .audio, lane: 0)
                             track(for: .audio, lane: 1)
                             track(for: .subtitle, lane: 0)
@@ -84,7 +85,8 @@ struct TimelineView: View {
                 }
             }
         }
-        .frame(height: 242)
+        // 5 条轨道（V1 / V2 / A1 / A2 / S1）+ 标尺 + 工具栏
+        .frame(height: 288)
         .background(Theme.panel2)
         .overlay(alignment: .top) {
             Rectangle().fill(Theme.line).frame(height: 1)
@@ -167,6 +169,7 @@ struct TimelineView: View {
         VStack(spacing: 0) {
             Color.clear.frame(height: 22)
             head("V1", "视频")
+            head("V2", "画中画")
             head("A1", "音乐")
             head("A2", "配音")
             head("S1", "字幕")
@@ -294,16 +297,21 @@ struct TimelineView: View {
 
     private func handleDrop(urls: [URL], time: Double, trackIndex: Int) {
         guard !urls.isEmpty else { return }
-        // 落在 A1 / A2 上时按用户意图指定音频层
-        let laneHint: Int?
+        // 落点决定素材去哪一层：V2 = 画中画，A1/A2 = 音乐 / 配音
+        var audioLaneHint: Int?
+        var videoLaneHint: Int?
         switch trackIndex {
-        case 1: laneHint = 0
-        case 2: laneHint = 1
-        default: laneHint = nil
+        case 1: videoLaneHint = 1
+        case 2: audioLaneHint = 0
+        case 3: audioLaneHint = 1
+        default: break
         }
         Task {
             for url in urls {
-                await appState.insertMedia(url: url, at: time, audioLaneHint: laneHint)
+                await appState.insertMedia(url: url,
+                                           at: time,
+                                           audioLaneHint: audioLaneHint,
+                                           videoLaneHint: videoLaneHint)
             }
         }
     }
@@ -734,6 +742,26 @@ struct ClipView: View {
                     .padding(.leading, 3)
                     .padding(.top, 3)
                     .allowsHitTesting(false)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            // 画中画片段挂个角标，扫一眼就知道它不占满画幅
+            if item.isOverlay {
+                HStack(spacing: 2) {
+                    Image(systemName: "rectangle.on.rectangle")
+                        .font(.system(size: 7, weight: .bold))
+                    if width >= 88 {
+                        Text("画中画")
+                            .font(.system(size: 7.5, weight: .semibold))
+                    }
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 3.5)
+                .padding(.vertical, 1.5)
+                .background(Capsule().fill(Color.black.opacity(0.45)))
+                .padding(.trailing, 3)
+                .padding(.top, 3)
+                .allowsHitTesting(false)
             }
         }
         .overlay(alignment: .leading) {

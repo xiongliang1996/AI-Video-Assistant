@@ -570,7 +570,10 @@ final class AppState: ObservableObject {
 
     /// 在指定位置插入素材（拖拽落点）。同轨同层已有片段时自动顺延到空隙
     @discardableResult
-    func insertMedia(url: URL, at desiredStart: Double, audioLaneHint: Int? = nil) async -> Bool {
+    func insertMedia(url: URL,
+                     at desiredStart: Double,
+                     audioLaneHint: Int? = nil,
+                     videoLaneHint: Int? = nil) async -> Bool {
         let asset: MediaAsset
         if let existing = mediaLibrary.first(where: { $0.url == url }) {
             asset = existing
@@ -597,6 +600,11 @@ final class AppState: ObservableObject {
                     lane = other
                 }
             }
+        } else if let videoLaneHint {
+            // 拖到 V2 上就是「做成画中画」；V2 冲突时退回 V1，别把素材丢掉
+            let preferred = min(max(0, videoLaneHint), TimelineItem.laneCount(for: .video) - 1)
+            lane = laneIsFree(.video, lane: preferred, start: desiredStart, end: desiredStart + duration)
+                ? preferred : 0
         }
 
         let start = freeStart(kind: trackKind, lane: lane, desired: desiredStart, duration: duration)
@@ -611,7 +619,11 @@ final class AppState: ObservableObject {
         item.trackLane = lane
         timeline.append(item)
         selectedItemID = item.id
-        notify("「\(asset.name)」已插入 \(formatTimecode(start))")
+        if item.isOverlay {
+            notify("「\(asset.name)」已作为画中画插入 \(formatTimecode(start))")
+        } else {
+            notify("「\(asset.name)」已插入 \(formatTimecode(start))")
+        }
         return true
     }
 
@@ -839,7 +851,7 @@ final class AppState: ObservableObject {
         timeline[index] = item
     }
 
-    /// 把片段移到另一层（音频 A1/A2）
+    /// 把片段移到另一层（音频 A1/A2、视频 V1/V2）
     func moveToLane(_ item: TimelineItem, lane: Int) {
         let kind = item.trackKind
         let maxLane = TimelineItem.laneCount(for: kind)
@@ -855,6 +867,9 @@ final class AppState: ObservableObject {
         copy.trackLane = target
         if let index = timeline.firstIndex(where: { $0.id == item.id }) {
             timeline[index] = copy
+        }
+        if kind == .video {
+            notify(target >= 1 ? "已转为画中画（V2）" : "已回到主画面（V1）")
         }
     }
 

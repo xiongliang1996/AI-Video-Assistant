@@ -7,6 +7,9 @@
 //  - 转场取前一个片段的「尾部余量」：前片源素材还有余量时向后延展 t 秒，
 //    后片从自己的入点正常开始，两段在 [后片入点, 后片入点 + t] 重叠
 //  - 合成指令按时间顺序铺满整条时间线（空隙补黑场），否则导出会失败
+//  - 画中画（V2 层）单独占轨道，以「图层叠在指令最前面」的方式合成。
+//    它的不透明度在自身区间外一律压到 0 —— AVFoundation 在 track 断流后
+//    会把末帧一直 hold 到指令结束，不归零的话画中画会一路糊到片尾。
 //
 
 import Foundation
@@ -40,6 +43,9 @@ enum CompositionBuilder {
         var trackSlot: Int = 0
         /// 画幅填充方式（全局一致，放在计划里省得一路传参）
         var fillMode: ExportFillMode = .fit
+
+        /// V2 层上的画中画
+        var isOverlay: Bool { item.isOverlay }
     }
 
     // MARK: - 构建
@@ -92,12 +98,17 @@ enum CompositionBuilder {
                                   fillMode: fillMode))
         }
 
-        // 2. 计算转场重叠量
-        if plans.count > 1 {
-            for i in 1..<plans.count {
-                let cur = plans[i]
+        // 2. 拆层：V1 是主画面，V2 是画中画
+        //    转场只在主画面层之间算 —— 画中画不做转场，它只是「浮在上面」，
+        //    给它做交叉溶解没有视觉意义，还会把主画面的指令切碎。
+        var mainPlans = plans.filter { !$0.isOverlay }
+        let overlayPlans = plans.filter { $0.isOverlay }
+
+        if mainPlans.count > 1 {
+            for i in 1..<mainPlans.count {
+                let cur = mainPlans[i]
                 let prevIndex = i - 1
-                let prev = plans[prevIndex]
+                let prev = mainPlans[prevIndex]
                 guard cur.item.transition != .none else { continue }
 
                 let contiguous = abs((prev.item.startTime + prev.timelineDuration) - cur.item.startTime) < 0.06
@@ -114,8 +125,8 @@ enum CompositionBuilder {
                 t = min(t, 1.5)
                 guard t >= 0.12 else { continue }
 
-                plans[prevIndex].extraTail = t
-                plans[i].inTransition = t
+                mainPlans[prevIndex].extraTail = t
+                mainPlans[i].inTransition = t
             }
         }
 
@@ -152,22 +163,34 @@ enum CompositionBuilder {
 
         var endCursor: Double = 0
 
-        for index in plans.indices {
-            guard !videoTracks.isEmpty else { break }
-            let slot = index % videoTracks.count
-            plans[index].trackSlot = slot
-            let track = videoTracks[slot]
+        /// 画中画轨道：V2 层同一时间只允许一段，但历史数据 / 多选操作也可能
+        /// 造出重叠，所以按「空出来就用」的方式复用轨道，实在挤不下再新开一条。
+        var overlayTracks: [AVMutableCompositionTrack] = []
+        var overlayBusy: [[(Double, Double)]] = []
 
-            let plan = plans[index]
+        func overlayTrack(for start: Double, end: Double) -> Int? {
+            for (index, busy) in overlayBusy.enumerated() {
+                let clash = busy.contains { start < $0.1 - 0.01 && end > $0.0 + 0.01 }
+                if !clash { return index }
+            }
+            guard let track = composition.addMutableTrack(withMediaType: .video,
+                                                          preferredTrackID: kCMPersistentTrackID_Invalid)
+            else { return nil }
+            overlayTracks.append(track)
+            overlayBusy.append([])
+            return overlayTracks.count - 1
+        }
+
+        /// 把一段视频插进指定轨道（含变速），失败返回 false
+        @discardableResult
+        func insertVideo(_ plan: ClipPlan, into track: AVMutableCompositionTrack) -> Double? {
             let startSeconds = plan.item.startTime
             let start = cmt(startSeconds)
             let wantedSource = (plan.timelineDuration + plan.extraTail) * plan.speed
             let take = min(wantedSource, plan.sourceAvailable)
-            guard take > 0.05 else { continue }
+            guard take > 0.05 else { return nil }
 
-            let range = CMTimeRange(start: cmt(plan.sourceIn),
-                                    duration: cmt(take))
-
+            let range = CMTimeRange(start: cmt(plan.sourceIn), duration: cmt(take))
             do {
                 try track.insertTimeRange(range, of: plan.videoTrack, at: start)
                 let insertedRange = CMTimeRange(start: start, duration: range.duration)
@@ -176,21 +199,22 @@ enum CompositionBuilder {
                     track.scaleTimeRange(insertedRange, toDuration: cmt(target))
                 }
             } catch {
-                continue
+                return nil
             }
 
             let playDuration = min(take / plan.speed, plan.timelineDuration + plan.extraTail)
-            endCursor = max(endCursor, startSeconds + playDuration)
 
             // 片段自带的音频
+            // 画中画的音频层号从 videoTracks.count 起算，免得和主画面的两条
+            // 音轨撞在一起（撞上会让两条片段的声音互相截断）
+            let audioSlot = plan.isOverlay ? videoTracks.count + plan.trackSlot : plan.trackSlot
             if let sourceAudio = plan.audioTrack,
-               let dest = audioTrack(from: &videoAudioTracks, slot: slot) {
+               let dest = audioTrack(from: &videoAudioTracks, slot: audioSlot) {
                 do {
                     try dest.insertTimeRange(range, of: sourceAudio, at: start)
                     let insertedRange = CMTimeRange(start: start, duration: range.duration)
                     if abs(playDuration - take) > 0.01 {
-                        dest.scaleTimeRange(insertedRange,
-                                            toDuration: cmt(playDuration))
+                        dest.scaleTimeRange(insertedRange, toDuration: cmt(playDuration))
                     }
                     applyVolume(params(for: dest),
                                 properties: plan.item.properties,
@@ -200,6 +224,31 @@ enum CompositionBuilder {
                     // 音频插入失败不影响画面
                 }
             }
+            return playDuration
+        }
+
+        // 主画面：A/B 交替，转场靠两条轨同时有画面
+        if !videoTracks.isEmpty {
+            for index in mainPlans.indices {
+                let slot = index % videoTracks.count
+                mainPlans[index].trackSlot = slot
+                guard let played = insertVideo(mainPlans[index], into: videoTracks[slot]) else { continue }
+                endCursor = max(endCursor, mainPlans[index].item.startTime + played)
+            }
+        }
+
+        // 画中画：各自找一条不冲突的轨道
+        var placedOverlays: [ClipPlan] = []
+        for index in overlayPlans.indices {
+            var plan = overlayPlans[index]
+            let start = plan.item.startTime
+            let end = start + plan.timelineDuration
+            guard let slot = overlayTrack(for: start, end: end) else { continue }
+            plan.trackSlot = slot
+            guard let played = insertVideo(plan, into: overlayTracks[slot]) else { continue }
+            overlayBusy[slot].append((start, end))
+            endCursor = max(endCursor, start + played)
+            placedOverlays.append(plan)
         }
 
         // 4. 独立音频轨（配音 / 音乐）
@@ -252,6 +301,7 @@ enum CompositionBuilder {
         }
 
         let hasVideo = videoTracks.contains { !$0.segments.isEmpty }
+            || overlayTracks.contains { !$0.segments.isEmpty }
         guard hasVideo || !clipAudioTracks.isEmpty else { throw VideoError.noVideoTrack }
 
         // 黑底轨：AVFoundation 的合成器不会清空未覆盖区域，
@@ -273,8 +323,10 @@ enum CompositionBuilder {
         let exactDuration = composition.duration
 
         let videoComposition = hasVideo
-            ? makeVideoComposition(plans: plans,
+            ? makeVideoComposition(plans: mainPlans,
                                    videoTracks: videoTracks,
+                                   overlays: placedOverlays,
+                                   overlayTracks: overlayTracks,
                                    renderSize: renderSize,
                                    fps: fps,
                                    totalDuration: exactDuration > .zero ? exactDuration : cmt(endCursor),
@@ -367,6 +419,8 @@ enum CompositionBuilder {
 
     private static func makeVideoComposition(plans: [ClipPlan],
                                              videoTracks: [AVMutableCompositionTrack],
+                                             overlays: [ClipPlan] = [],
+                                             overlayTracks: [AVMutableCompositionTrack] = [],
                                              renderSize: CGSize,
                                              fps: Int,
                                              totalDuration: CMTime,
@@ -435,6 +489,13 @@ enum CompositionBuilder {
             cursor = max(cursor, end)
         }
 
+        // 一条主画面都没有（时间线上只放了画中画）时，上面一条指令都不会生成。
+        // 合成器要求指令铺满整片，这里先补一条全黑底，画中画才有地方落脚，
+        // 否则导出直接报 -11841。
+        if instructions.isEmpty, totalDuration > .zero {
+            instructions.append(blank(from: .zero, to: totalDuration))
+        }
+
         // 收尾：尾巴补齐，越界的裁掉，保证终点正好等于合成时长
         if let lastEnd = instructions.last?.timeRange.end {
             if lastEnd < totalDuration {
@@ -447,6 +508,38 @@ enum CompositionBuilder {
                 } else {
                     instructions.removeLast()
                 }
+            }
+        }
+
+        // 画中画：叠在每条「与它区间相交」的指令最前面（layerInstructions 第一个是最前）
+        //
+        // 这里**不切指令**，而是让画中画图层的 opacity 在自身区间外归零。
+        // 原因：AVFoundation 对「track 已经断流」的处理是把末帧一直 hold 到指令结束，
+        // 单靠 track 边界隔离不住，画中画会一路糊到片尾。归零之后 hold 的是透明帧，
+        // 视觉上干净，而主画面的指令、转场、关键帧全都不用改。
+        if !overlays.isEmpty, !overlayTracks.isEmpty {
+            for instruction in instructions {
+                let lo = CMTimeGetSeconds(instruction.timeRange.start)
+                let hi = CMTimeGetSeconds(instruction.timeRange.end)
+                var overlayLayers: [AVMutableVideoCompositionLayerInstruction] = []
+                for plan in overlays {
+                    guard plan.trackSlot < overlayTracks.count else { continue }
+                    let a = plan.item.startTime
+                    let b = a + plan.timelineDuration
+                    // 半开区间相交判定：刚好贴在边上的指令不算，避免多发一条空图层
+                    guard b > lo + 0.0005, a < hi - 0.0005 else { continue }
+
+                    let layer = AVMutableVideoCompositionLayerInstruction(
+                        assetTrack: overlayTracks[plan.trackSlot])
+                    applyOverlay(layer,
+                                 plan: plan,
+                                 renderSize: renderSize,
+                                 clipTo: lo,
+                                 hi: hi)
+                    overlayLayers.append(layer)
+                }
+                guard !overlayLayers.isEmpty else { continue }
+                instruction.layerInstructions = overlayLayers + instruction.layerInstructions
             }
         }
 
@@ -731,6 +824,177 @@ enum CompositionBuilder {
         // 层顺序：前 → 后（滑动转场入场层在下，避免把前一段整块盖住）
         instruction.layerInstructions = [outLayer, inLayer]
         return instruction
+    }
+
+    // MARK: - 画中画
+
+    /// 画中画目标矩形：按「画幅宽 × widthRatio」等比缩放，再贴到指定角。
+    /// 目标宽高比取素材自身的宽高比，所以这里不需要再走一次 fit / fill。
+    ///
+    /// 坐标系是视频合成的坐标系：原点在左上角，**y 向下增长**。
+    static func pipRect(naturalSize: CGSize,
+                        renderSize: CGSize,
+                        style: PiPStyle) -> CGRect {
+        let s = style.sanitized
+        guard naturalSize.width > 1, naturalSize.height > 1,
+              renderSize.width > 1, renderSize.height > 1 else { return .zero }
+
+        let width = renderSize.width * CGFloat(s.widthRatio)
+        let height = width * naturalSize.height / naturalSize.width
+        guard width > 0.5, height > 0.5, height.isFinite else { return .zero }
+        let margin = renderSize.width * CGFloat(s.margin)
+
+        let origin: CGPoint
+        switch s.position {
+        case .topLeading:
+            origin = CGPoint(x: margin, y: margin)
+        case .topTrailing:
+            origin = CGPoint(x: renderSize.width - margin - width, y: margin)
+        case .bottomLeading:
+            origin = CGPoint(x: margin, y: renderSize.height - margin - height)
+        case .bottomTrailing:
+            origin = CGPoint(x: renderSize.width - margin - width,
+                             y: renderSize.height - margin - height)
+        case .center:
+            origin = CGPoint(x: (renderSize.width - width) / 2,
+                             y: (renderSize.height - height) / 2)
+        }
+        return CGRect(origin: origin, size: CGSize(width: width, height: height))
+    }
+
+    private static func pipTransform(plan: ClipPlan,
+                                     renderSize: CGSize,
+                                     widthRatioOverride: Double? = nil) -> CGAffineTransform {
+        let raw = CGRect(origin: .zero, size: plan.naturalSize).applying(plan.preferredTransform)
+        let width = abs(raw.width)
+        let height = abs(raw.height)
+        guard width > 1, height > 1 else { return .identity }
+
+        var style = plan.item.properties.pip
+        // 缩放（静态值或关键帧）当作画中画尺寸的倍率：
+        // 「尺寸」定基准，缩放用来做推拉动画，两者语义不打架
+        let multiplier = min(max(widthRatioOverride ?? plan.item.properties.scale, 0.1), 3.0)
+        style.widthRatio *= multiplier
+        let rect = pipRect(naturalSize: CGSize(width: width, height: height),
+                           renderSize: renderSize,
+                           style: style)
+        guard rect.width > 0.5 else { return .identity }
+
+        let box = CGRect(x: raw.minX, y: raw.minY, width: width, height: height)
+        let scale = rect.width / width
+
+        var transform = plan.preferredTransform
+        transform = transform.concatenating(CGAffineTransform(translationX: -box.midX, y: -box.midY))
+        transform = transform.concatenating(CGAffineTransform(scaleX: scale, y: scale))
+
+        let angle = plan.item.properties.rotation * .pi / 180
+        if abs(angle) > 0.0001 {
+            transform = transform.concatenating(CGAffineTransform(rotationAngle: angle))
+        }
+        transform = transform.concatenating(CGAffineTransform(translationX: rect.midX, y: rect.midY))
+        return transform
+    }
+
+    /// 给画中画图层铺「不透明度 + 变换」曲线，只覆盖 [lo, hi] 这一条指令。
+    ///
+    /// 关键在区间外归零：AVFoundation 会把断流 track 的末帧 hold 到指令结束，
+    /// 不归零画中画就会一直糊到片尾。区间内的曲线按片段自身的
+    /// opacity / 淡入淡出 / 关键帧走，指令从曲线中间切开时端点按插值算，
+    /// 所以画中画横跨多条指令也不会跳变。
+    private static func applyOverlay(_ layer: AVMutableVideoCompositionLayerInstruction,
+                                     plan: ClipPlan,
+                                     renderSize: CGSize,
+                                     clipTo lo: Double,
+                                     hi: Double) {
+        let a = plan.item.startTime
+        let b = a + plan.timelineDuration
+        guard b > a + 0.0005, hi > lo else { return }
+
+        let props = plan.item.properties
+        let span = b - a
+        let half = span / 2
+        let fadeIn = min(max(0, props.fadeIn), half)
+        let fadeOut = min(max(0, props.fadeOut), half)
+
+        // 有关键帧时整段交给关键帧，淡入淡出不再叠加（和主画面片段规则一致）
+        let opacityKeyed = !props.keyframes(for: .opacity).isEmpty
+        let scaleKeyed = !props.keyframes(for: .scale).isEmpty
+
+        /// 区间内某时刻的相对不透明度（不含「区间外为 0」这层）
+        func base(_ t: Double) -> Double {
+            let local = min(max(t - a, 0), span)
+            if opacityKeyed {
+                return min(max(props.animatedValue(.opacity, at: local), 0), 1)
+            }
+            let value = min(max(props.opacity, 0), 1)
+            var factor = 1.0
+            if fadeIn > 0.02, local < fadeIn { factor = min(factor, local / fadeIn) }
+            if fadeOut > 0.02, local > span - fadeOut { factor = min(factor, (span - local) / fadeOut) }
+            return value * max(0, factor)
+        }
+
+        func value(_ t: Double) -> Double {
+            (t < a || t > b) ? 0 : base(t)
+        }
+
+        // 折点：片段两端、淡入淡出边界、关键帧时间点
+        var breaks: [Double] = [a, b]
+        if fadeIn > 0.02 { breaks.append(a + fadeIn) }
+        if fadeOut > 0.02 { breaks.append(b - fadeOut) }
+        for frame in props.keyframes(for: .opacity) {
+            breaks.append(min(max(a + frame.time, a), b))
+        }
+        for frame in props.keyframes(for: .scale) {
+            breaks.append(min(max(a + frame.time, a), b))
+        }
+
+        var samples: [Double] = [lo, hi]
+        for t in breaks where t > lo + 0.0005 && t < hi - 0.0005 {
+            if samples.allSatisfy({ abs($0 - t) > 0.0005 }) { samples.append(t) }
+        }
+        samples.sort()
+
+        // 指令从画中画之前开始时，先把图层压到全透明，否则默认是不透明的
+        if lo <= a + 0.0005 {
+            layer.setOpacity(0, at: cmt(lo))
+        }
+
+        for index in 1..<samples.count {
+            let t0 = samples[index - 1]
+            let t1 = samples[index]
+            guard t1 - t0 > 0.0005, let range = timeRange(from: t0, to: t1) else { continue }
+            layer.setOpacityRamp(fromStartOpacity: Float(value(t0)),
+                                 toEndOpacity: Float(value(t1)),
+                                 timeRange: range)
+        }
+
+        // 指令跨过画中画结尾时补一个归零台阶：淡出为 0 时 ramp 已经收在 0，
+        // 否则（无淡出）需要这一下硬切，避免末帧被 hold 住
+        if hi >= b - 0.0005, fadeOut <= 0.02, !opacityKeyed {
+            layer.setOpacity(0, at: cmt(b))
+        }
+
+        // 变换：没有缩放关键帧时一个定值就够
+        if !scaleKeyed {
+            layer.setTransform(pipTransform(plan: plan, renderSize: renderSize), at: cmt(lo))
+            return
+        }
+        var previous: CGAffineTransform?
+        for index in 0..<samples.count {
+            let t = samples[index]
+            let local = min(max(t - a, 0), span)
+            let transform = pipTransform(plan: plan,
+                                         renderSize: renderSize,
+                                         widthRatioOverride: props.animatedValue(.scale, at: local))
+            if index > 0, let from = previous,
+               let range = timeRange(from: samples[index - 1], to: t) {
+                layer.setTransformRamp(fromStart: from, toEnd: transform, timeRange: range)
+            }
+            previous = transform
+        }
+        if let first = previous, samples.count == 1 {
+            layer.setTransform(first, at: cmt(lo))
+        }
     }
 
     // MARK: - 带关键帧的转场
