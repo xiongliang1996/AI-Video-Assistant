@@ -283,7 +283,7 @@ struct TimelineView: View {
         .background(alignment: .top) {
             VStack(spacing: 0) {
                 Color.clear.frame(height: 22)
-                ForEach(0..<4, id: \.self) { index in
+                ForEach(0..<5, id: \.self) { index in
                     Rectangle()
                         .fill(index == track ? Theme.accent.opacity(0.16) : Color.clear)
                         .frame(height: trackHeight)
@@ -580,7 +580,8 @@ private struct TimelineDropDelegate: DropDelegate {
         dropTime = max(0, Double(info.location.x / max(1, pps)))
         let y = info.location.y - rulerHeight
         let index = Int(y / max(1, trackHeight))
-        dropTrack = min(max(0, index), 3)
+        // 轨道行数：V1 / V2 / A1 / A2 / S1
+        dropTrack = min(max(0, index), 4)
     }
 
     func performDrop(info: DropInfo) -> Bool {
