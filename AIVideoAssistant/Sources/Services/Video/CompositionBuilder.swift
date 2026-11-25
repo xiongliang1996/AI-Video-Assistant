@@ -839,10 +839,22 @@ enum CompositionBuilder {
         guard naturalSize.width > 1, naturalSize.height > 1,
               renderSize.width > 1, renderSize.height > 1 else { return .zero }
 
-        let width = renderSize.width * CGFloat(s.widthRatio)
-        let height = width * naturalSize.height / naturalSize.width
+        var width = renderSize.width * CGFloat(s.widthRatio)
+        var height = width * naturalSize.height / naturalSize.width
         guard width > 0.5, height > 0.5, height.isFinite else { return .zero }
         let margin = renderSize.width * CGFloat(s.margin)
+
+        // 竖屏素材放大到 70% 宽时高度会远超画幅，直接按宽算会顶出画面。
+        // 这里等比缩到「画幅减去两侧留白」以内，比例不变、保证完整可见。
+        let maxWidth = renderSize.width - 2 * margin
+        let maxHeight = renderSize.height - 2 * margin
+        if maxWidth > 1, maxHeight > 1 {
+            let fit = min(1, min(maxWidth / width, maxHeight / height))
+            if fit < 1, fit.isFinite {
+                width *= fit
+                height *= fit
+            }
+        }
 
         let origin: CGPoint
         switch s.position {
