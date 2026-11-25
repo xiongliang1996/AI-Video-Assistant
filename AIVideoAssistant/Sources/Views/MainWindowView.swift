@@ -28,6 +28,12 @@ struct MainWindowView: View {
         .sheet(isPresented: $appState.showingExportQueue) {
             ExportQueueView()
         }
+        .sheet(item: $appState.preflightReport) { report in
+            PreflightView(report: report,
+                          onContinue: { appState.proceedExportAfterPreflight() },
+                          onCancel: { appState.dismissPreflight() })
+                .environmentObject(appState)
+        }
         .overlay(alignment: .bottom) { toastLayer }
         .overlay { processingLayer }
         .alert("提示", isPresented: errorBinding) {

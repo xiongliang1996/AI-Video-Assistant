@@ -47,6 +47,10 @@ final class AppState: ObservableObject {
     @Published var showingSettings = false
     @Published var showingSmartCut = false
     @Published var showingExportQueue = false
+    /// 导出前体检结果；有值就弹面板
+    @Published var preflightReport: PreflightReport?
+    /// 体检通过后要继续做的事（打开保存面板）
+    private var preflightAction: (() -> Void)?
 
     // 素材与时间线
     @Published var mediaLibrary: [MediaAsset] = []
@@ -1205,7 +1209,43 @@ final class AppState: ObservableObject {
 
     // MARK: - 导出
 
+    /// 导出前先体检：有问题就弹面板列清楚，用户确认后再选路径。
+    /// 没问题的常见情况（干净时间线）不会多一步，直接进保存面板。
     func exportVideo() {
+        guard !timeline.isEmpty else {
+            showError("时间线是空的，先放点素材进来")
+            return
+        }
+        let items = timeline
+        let settings = currentProject.settings
+
+        Task { @MainActor in
+            let report = await PreflightCheck.run(items: items, settings: settings)
+            if report.hasIssues {
+                self.preflightAction = { [weak self] in self?.presentExportPanel() }
+                self.preflightReport = report
+            } else {
+                self.presentExportPanel()
+            }
+        }
+    }
+
+    /// 体检面板里点了「开始导出 / 仍然导出」
+    func proceedExportAfterPreflight() {
+        let action = preflightAction
+        preflightAction = nil
+        preflightReport = nil
+        // 等 sheet 收完再开保存面板，否则两个模态会打架
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { action?() }
+    }
+
+    /// 体检面板里点了「取消 / 去修改」
+    func dismissPreflight() {
+        preflightAction = nil
+        preflightReport = nil
+    }
+
+    private func presentExportPanel() {
         let settings = currentProject.settings
         let panel = NSSavePanel()
         panel.allowedContentTypes = [settings.format.avFileType == .mov ? .quickTimeMovie : .mpeg4Movie]
