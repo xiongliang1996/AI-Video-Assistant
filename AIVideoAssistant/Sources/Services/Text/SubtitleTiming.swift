@@ -117,6 +117,105 @@ enum SubtitleTiming {
         return (pixels * secondsPerPoint / step).rounded() * step
     }
 
+    // MARK: - 吸附到语音
+
+    /// 在一组边界里找离 value 最近、且在容差内的那个。
+    /// 比较时留 1e-9 的余量：0.35 这种容差在浮点里常常差最后一位，
+    /// 刚好卡在边界上的边界值应该算命中。
+    static func nearest(_ value: Double, in candidates: [Double], tolerance: Double) -> Double? {
+        guard tolerance > 0 else { return nil }
+        var best: Double?
+        var bestDistance = Double.greatestFiniteMagnitude
+        for candidate in candidates {
+            let distance = abs(candidate - value)
+            if distance <= tolerance + 1e-9, distance < bestDistance {
+                bestDistance = distance
+                best = candidate
+            }
+        }
+        return best
+    }
+
+    /// 把一条字幕的起止吸到语音边界上：
+    /// 起点找最近的「语音起点」，结尾找最近的「语音终点」。
+    ///
+    /// 不做「起点也能吸到语音终点」这种双向吸附——那会把字幕拉进停顿里，
+    /// 看起来像是提前出场了。容差外的边界不碰，免得一句话被拽到老远。
+    static func snapToSpeech(_ entries: [SubtitleEntry],
+                             at index: Int,
+                             speech: [ClosedRange<Double>],
+                             tolerance: Double = 0.35,
+                             total: Double) -> [SubtitleEntry] {
+        guard entries.indices.contains(index), !speech.isEmpty, tolerance > 0 else { return entries }
+        let entry = entries[index]
+        let room = bounds(entries, at: index, total: total)
+
+        var start = entry.startTime
+        if let snapped = nearest(entry.startTime, in: speech.map(\.lowerBound), tolerance: tolerance) {
+            start = snapped
+        }
+        let startLimit = max(room.lowerBound, entry.endTime - minDuration)
+        start = min(max(start, room.lowerBound), startLimit)
+        if total > 0 { start = min(start, max(0, total - minDuration)) }
+
+        var end = entry.endTime
+        if let snapped = nearest(entry.endTime, in: speech.map(\.upperBound), tolerance: tolerance) {
+            end = snapped
+        }
+        var limit = room.upperBound
+        if total > 0 { limit = min(limit, total) }
+        end = min(max(end, start + minDuration), max(start + minDuration, limit))
+
+        guard abs(start - entry.startTime) > 0.0005 || abs(end - entry.endTime) > 0.0005 else {
+            return entries
+        }
+        var result = entries
+        result[index].startTime = start
+        result[index].endTime = end
+        return result
+    }
+
+    /// 全部吸附。按顺序逐条处理，后一条看到的是前一条吸完的结果，所以不会互相压住
+    static func snapAllToSpeech(_ entries: [SubtitleEntry],
+                                speech: [ClosedRange<Double>],
+                                tolerance: Double = 0.35,
+                                total: Double) -> [SubtitleEntry] {
+        guard !entries.isEmpty, !speech.isEmpty else { return entries }
+        var result = entries
+        for index in result.indices {
+            result = snapToSpeech(result, at: index, speech: speech,
+                                  tolerance: tolerance, total: total)
+        }
+        return result
+    }
+
+    // MARK: - 整组平移
+
+    /// 所有条一起挪同样的距离（处理「字幕整体比画面早半秒」这类系统性偏差）。
+    /// 整块一起动，所以组内不会产生新的重叠；只夹住两头不越界。
+    static func shiftAll(_ entries: [SubtitleEntry], by delta: Double, total: Double) -> [SubtitleEntry] {
+        guard !entries.isEmpty, delta != 0, delta.isFinite else { return entries }
+        let blockStart = entries.map(\.startTime).min() ?? 0
+        let blockEnd = entries.map(\.endTime).max() ?? 0
+
+        var lower = -blockStart
+        var upper = Double.greatestFiniteMagnitude
+        if total > 0 {
+            upper = total - blockEnd
+            if upper < lower { upper = lower }
+        }
+        let applied = min(max(delta, lower), upper)
+        guard abs(applied) > 0.0005 else { return entries }
+
+        var result = entries
+        for index in result.indices {
+            result[index].startTime = max(0, result[index].startTime + applied)
+            result[index].endTime = max(result[index].startTime + 0.01,
+                                        result[index].endTime + applied)
+        }
+        return result
+    }
+
     // MARK: - 兜底
 
     /// 理顺顺序：不早于 0、不与前一条重叠、结尾不早于起点，且不越过总时长。

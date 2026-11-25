@@ -37,6 +37,8 @@ struct SubtitleView: View {
     @State private var timingBaseline: [SubtitleEntry]?
     /// 拖动开始时的快照，避免连续 onChanged 累积误差
     @State private var dragBase: [SubtitleEntry]?
+    /// 最近一次对齐用的语音分析（时间线时间），用于「吸附到语音」
+    @State private var lastAnalysis: SpeechAnalysis?
 
     private let colors: [Color] = [.white, Color(hex: 0xFFD166), Color(hex: 0x7C6BFF), Color(hex: 0x12B76A)]
     private let colorHexes: [Int] = [0xFFFFFF, 0xFFD166, 0x7C6BFF, 0x12B76A]
@@ -48,7 +50,8 @@ struct SubtitleView: View {
          subtitles: [SubtitleEntry] = [],
          report: SubtitleAligner.Report? = nil,
          selectedIndex: Int? = nil,
-         timelineClip: TimelineItem? = nil) {
+         timelineClip: TimelineItem? = nil,
+         analysis: SpeechAnalysis? = nil) {
         _source = State(initialValue: initialSource)
         _scriptText = State(initialValue: script)
         _videoURL = State(initialValue: timelineClip.flatMap { $0.assetURL } ?? mediaURL)
@@ -56,6 +59,7 @@ struct SubtitleView: View {
         _alignReport = State(initialValue: report)
         _timingBaseline = State(initialValue: subtitles.isEmpty ? nil : subtitles)
         _timelineClipID = State(initialValue: timelineClip?.id)
+        _lastAnalysis = State(initialValue: analysis)
         if let selectedIndex, subtitles.indices.contains(selectedIndex) {
             _selectedSubtitleID = State(initialValue: subtitles[selectedIndex].id)
         }
@@ -698,11 +702,40 @@ struct SubtitleView: View {
                     subtitles = SubtitleTiming.resizeEnd(subtitles, at: index,
                                                          by: SubtitleTiming.step, total: timelineTotal)
                 }
+                timingButton("吸附到语音", "把这一条的起止贴到最近的语音起止上",
+                             enabled: canSnap) {
+                    snapSelected(index)
+                }
                 Spacer(minLength: 0)
                 Text(SubtitleTiming.roomLabel(subtitles, at: index, total: timelineTotal))
                     .font(.system(size: 9.5))
                     .foregroundStyle(Theme.text3)
                     .lineLimit(1)
+            }
+
+            // 整体偏了半秒这种系统性偏差，一条条按太麻烦
+            HStack(spacing: 6) {
+                Text("全部 \(subtitles.count) 条")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(Theme.text3)
+                timingButton("◀ 0.1s", "全部前移 0.1 秒") {
+                    subtitles = SubtitleTiming.shiftAll(subtitles, by: -SubtitleTiming.step,
+                                                        total: timelineTotal)
+                }
+                timingButton("0.1s ▶", "全部后移 0.1 秒") {
+                    subtitles = SubtitleTiming.shiftAll(subtitles, by: SubtitleTiming.step,
+                                                        total: timelineTotal)
+                }
+                timingButton("全部吸附", "把每一条的起止都贴到最近的语音边界上",
+                             enabled: canSnap) {
+                    snapAll()
+                }
+                Spacer(minLength: 0)
+                if lastAnalysis == nil {
+                    Text("吸附需要先做一次文稿对齐")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(Theme.text3)
+                }
             }
         }
         .padding(.horizontal, 12)
@@ -710,13 +743,47 @@ struct SubtitleView: View {
         .background(Theme.panel.opacity(0.55))
     }
 
-    private func timingButton(_ title: String, _ help: String, action: @escaping () -> Void) -> some View {
+    /// 自定义 ButtonStyle 不会自己变灰，禁用状态得手动压暗
+    private func timingButton(_ title: String,
+                              _ help: String,
+                              enabled: Bool = true,
+                              action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 10.5))
         }
         .buttonStyle(SoftButtonStyle(height: 24))
+        .opacity(enabled ? 1 : 0.38)
+        .disabled(!enabled)
         .help(help)
+    }
+
+    /// 有语音分析才能吸附
+    private var canSnap: Bool {
+        !(lastAnalysis?.speech.isEmpty ?? true)
+    }
+
+    private func snapSelected(_ index: Int) {
+        guard let analysis = lastAnalysis, !analysis.speech.isEmpty else {
+            appState.notify("先做一次文稿对齐，才有语音边界可吸附")
+            return
+        }
+        subtitles = SubtitleTiming.snapToSpeech(subtitles, at: index,
+                                                speech: analysis.speech, total: timelineTotal)
+    }
+
+    private func snapAll() {
+        guard let analysis = lastAnalysis, !analysis.speech.isEmpty else {
+            appState.notify("先做一次文稿对齐，才有语音边界可吸附")
+            return
+        }
+        let snapped = SubtitleTiming.snapAllToSpeech(subtitles, speech: analysis.speech,
+                                                     total: timelineTotal)
+        let moved = zip(snapped, subtitles).filter {
+            abs($0.startTime - $1.startTime) > 0.001 || abs($0.endTime - $1.endTime) > 0.001
+        }.count
+        subtitles = snapped
+        appState.notify(moved == 0 ? "都已经贴着语音边界了" : "已吸附 \(moved) 条到语音边界")
     }
 
     // MARK: - 动作
@@ -731,6 +798,7 @@ struct SubtitleView: View {
         timelineClipID = nil
         alignReport = nil
         alignNote = nil
+        lastAnalysis = nil
     }
 
     /// 选时间线上的片段当配音：文件还是那个文件，只是字幕要对齐到它在时间线上的位置
@@ -743,6 +811,7 @@ struct SubtitleView: View {
         videoURL = url
         alignReport = nil
         alignNote = nil
+        lastAnalysis = nil
     }
 
     private func clipURL(_ clip: TimelineItem) -> URL? {
@@ -768,6 +837,7 @@ struct SubtitleView: View {
             timelineClipID = nil
             alignReport = nil
             alignNote = nil
+            lastAnalysis = nil
         }
     }
 
@@ -843,6 +913,7 @@ struct SubtitleView: View {
                 subtitles = entries
                 timingBaseline = entries
                 selectedSubtitleID = nil
+                lastAnalysis = analysis
                 alignReport = report
                 isAligning = false
                 appState.notify("已对齐 \(entries.count) 条字幕")
