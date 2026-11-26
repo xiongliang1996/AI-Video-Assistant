@@ -28,6 +28,10 @@ struct MainWindowView: View {
         .sheet(isPresented: $appState.showingExportQueue) {
             ExportQueueView()
         }
+        .sheet(isPresented: $appState.showingAssetRelink) {
+            AssetRelinkView()
+                .environmentObject(appState)
+        }
         .sheet(item: $appState.preflightReport) { report in
             PreflightView(report: report,
                           onContinue: { appState.proceedExportAfterPreflight() },

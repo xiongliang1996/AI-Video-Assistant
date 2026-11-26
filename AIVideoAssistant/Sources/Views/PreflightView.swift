@@ -129,7 +129,16 @@ struct PreflightView: View {
 
     private var footer: some View {
         HStack(spacing: 8) {
-            if report.blocksExport {
+            if report.hasMissingAssets {
+                Button {
+                    appState.relinkFromPreflight()
+                } label: {
+                    Label("重连素材…", systemImage: "link.badge.plus")
+                        .font(.system(size: 11.5))
+                }
+                .buttonStyle(SoftButtonStyle(height: 30))
+                .help("文件只是被挪走的话，指回去就行，裁剪和关键帧都保留")
+            } else if report.blocksExport {
                 Text("这些问题会让导出失败，建议先改")
                     .font(.system(size: 10))
                     .foregroundStyle(Theme.danger)

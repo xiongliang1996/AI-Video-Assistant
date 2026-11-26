@@ -88,6 +88,9 @@ struct MediaLibraryView: View {
         VStack(spacing: 0) {
             header
             VStack(alignment: .leading, spacing: 10) {
+                if appState.missingAssetCount > 0 {
+                    missingBanner
+                }
                 filterRow
                 collectionRow
                 content
@@ -166,6 +169,31 @@ struct MediaLibraryView: View {
         .frame(height: 50)
         .background(Theme.panel.opacity(0.72))
         .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
+    }
+
+    /// 素材文件被移动 / 改名时的提示条。不主动重连的话，时间线上这些片段就是黑屏
+    private var missingBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.danger)
+
+            Text("\(appState.missingAssetCount) 个素材找不到文件，相关片段会渲染成黑屏")
+                .font(.system(size: 11.5))
+                .foregroundStyle(Theme.text)
+                .lineLimit(1)
+
+            Spacer(minLength: 8)
+
+            Button("重连…") { appState.presentAssetRelink() }
+                .buttonStyle(SoftButtonStyle(height: 24))
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 7)
+            .fill(Theme.danger.opacity(0.08)))
+        .overlay(RoundedRectangle(cornerRadius: 7)
+            .stroke(Theme.danger.opacity(0.25), lineWidth: 1))
     }
 
     private var subtitle: String {
@@ -501,6 +529,7 @@ struct MediaLibraryView: View {
                                     index: index,
                                     selected: selected.contains(asset.id),
                                     usageCount: usage.count(asset),
+                                    missing: appState.isAssetMissing(asset),
                                     onToggle: { toggleSelection(asset) },
                                     onAdd: { appState.addToTimeline(asset) },
                                     collections: collections,
@@ -615,6 +644,8 @@ struct LibraryCard: View {
     let selected: Bool
     /// 被时间线引用了多少次
     var usageCount: Int = 0
+    /// 文件已经找不到了（卡片要打红标，否则看着和正常素材一样）
+    var missing: Bool = false
     let onToggle: () -> Void
     let onAdd: () -> Void
     /// 右键菜单用：当前有哪些集合、以及三个操作回调
@@ -640,9 +671,14 @@ struct LibraryCard: View {
             LinearGradient(colors: [.clear, .black.opacity(0.7)],
                            startPoint: .center, endPoint: .bottom)
 
+            // 文件丢了就压暗一层：一眼能看出这张不能用了
+            if missing {
+                Color.black.opacity(0.32)
+            }
+
             VStack {
                 HStack(alignment: .top) {
-                    usageBadge
+                    if missing { missingBadge } else { usageBadge }
                     Spacer()
                     Button(action: onToggle) {
                         ZStack {
@@ -693,7 +729,8 @@ struct LibraryCard: View {
         .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .stroke(selected ? Theme.accent : Theme.line, lineWidth: selected ? 2 : 1)
+                .stroke(selected ? Theme.accent : (missing ? Theme.danger.opacity(0.65) : Theme.line),
+                        lineWidth: selected ? 2 : 1)
         )
         .onHover { hovering = $0 }
         .mediaSkim(asset, cornerRadius: 9)
@@ -734,6 +771,20 @@ struct LibraryCard: View {
         .help(helpText)
     }
 
+    /// 文件丢了：红标盖过「已用」角标——这时候更要紧的是「这张不能用了」
+    private var missingBadge: some View {
+        HStack(spacing: 2.5) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 7.5, weight: .semibold))
+            Text("文件丢失")
+                .font(.system(size: 8.5, weight: .medium))
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 4.5)
+        .padding(.vertical, 1.5)
+        .background(Capsule().fill(Theme.danger.opacity(0.92)))
+    }
+
     /// 左上角：被时间线用了几次。没用到的素材不显示，避免整屏都是标签
     @ViewBuilder
     private var usageBadge: some View {
@@ -765,6 +816,9 @@ struct LibraryCard: View {
     private var helpText: String {
         var text = "\(asset.name) · \(metaText)"
         text += usageCount > 0 ? " · 时间线用了 \(usageCount) 次" : " · 未使用"
+        if missing {
+            text += " · 文件找不到了，用「重连缺失素材」指回新位置"
+        }
         if onDropReorder != nil {
             text += " · 拖到别的卡片上可以调整集合顺序"
         }

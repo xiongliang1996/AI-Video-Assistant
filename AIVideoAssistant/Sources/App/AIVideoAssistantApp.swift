@@ -25,6 +25,11 @@ struct AIVideoAssistantApp: App {
                     .keyboardShortcut("o", modifiers: .command)
                 Button("导入素材…") { appState.importMedia() }
                     .keyboardShortcut("i", modifiers: .command)
+
+                Divider()
+
+                Button("重连缺失素材…") { appState.presentAssetRelink() }
+                    .keyboardShortcut("l", modifiers: [.command, .shift])
             }
             CommandGroup(replacing: .saveItem) {
                 Button("保存项目") {

@@ -50,6 +50,8 @@ struct PreflightIssue: Identifiable, Hashable {
     var detail: String
     /// 相关片段名（可能为 nil）
     var clipName: String?
+    /// 这条能不能靠「重连缺失素材」修掉（面板上会多一个按钮）
+    var suggestsRelink: Bool = false
 }
 
 struct PreflightReport: Identifiable, Hashable {
@@ -64,6 +66,8 @@ struct PreflightReport: Identifiable, Hashable {
     var hasIssues: Bool { !issues.isEmpty }
     /// 有会直接导致失败的问题
     var blocksExport: Bool { errorCount > 0 }
+    /// 有素材找不到文件（能靠重连修掉）
+    var hasMissingAssets: Bool { issues.contains { $0.suggestsRelink } }
 
     var headline: String {
         if errorCount > 0 { return "\(errorCount) 处会导致导出失败" }
@@ -185,8 +189,9 @@ enum PreflightCheck {
             guard fileExists(url) else {
                 issues.append(PreflightIssue(severity: .error,
                                              title: "「\(item.name)」的文件找不到了",
-                                             detail: "路径：\(url.path)。文件被移动或删除后，这一段导不出来。",
-                                             clipName: item.name))
+                                             detail: "路径：\(url.path)。文件只是挪了位置的话，用「重连缺失素材」指回去就行，裁剪点和关键帧都还在。",
+                                             clipName: item.name,
+                                             suggestsRelink: true))
                 continue
             }
             if let asset = info(for: item) {

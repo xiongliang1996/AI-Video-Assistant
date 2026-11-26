@@ -47,6 +47,14 @@ final class AppState: ObservableObject {
     @Published var showingSettings = false
     @Published var showingSmartCut = false
     @Published var showingExportQueue = false
+    /// 素材重连面板
+    @Published var showingAssetRelink = false
+    /// 面板里列出的缺失素材（打开面板时扫一次）
+    @Published var relinkCandidates: [AssetRelinker.Missing] = []
+    /// 找不到文件的素材路径集合。用集合而不是计数，素材卡片才能标出哪一张丢了
+    @Published var missingAssetPaths: Set<String> = []
+    /// 提示条上的数字
+    var missingAssetCount: Int { missingAssetPaths.count }
     /// 导出前体检结果；有值就弹面板
     @Published var preflightReport: PreflightReport?
     /// 体检通过后要继续做的事（打开保存面板）
@@ -483,6 +491,15 @@ final class AppState: ObservableObject {
             .dropFirst()
             .debounce(for: .seconds(0.4), scheduler: DispatchQueue.main)
             .sink { [weak self] _ in self?.saveNow() }
+            .store(in: &cancellables)
+
+        // 素材或时间线变了就重扫一次缺失文件，供素材库提示条使用。
+        // 防抖是为了拖动片段时不要每一帧都去 stat 一遍所有路径
+        $mediaLibrary
+            .map { _ in () }
+            .merge(with: $timeline.map { _ in () })
+            .debounce(for: .seconds(0.8), scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in self?.refreshMissingAssetCount() }
             .store(in: &cancellables)
     }
 
@@ -1365,6 +1382,15 @@ final class AppState: ObservableObject {
         preflightReport = nil
     }
 
+    /// 从体检面板跳到重连面板。两个都是 sheet，不能同时开，
+    /// 所以先关掉体检、等它收完动画再弹重连
+    func relinkFromPreflight() {
+        dismissPreflight()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) { [weak self] in
+            self?.presentAssetRelink()
+        }
+    }
+
     private func presentExportPanel() {
         let settings = currentProject.settings
         let panel = NSSavePanel()
@@ -1390,6 +1416,80 @@ final class AppState: ObservableObject {
             let pending = ExportQueue.shared.pendingCount
             self.notify(pending > 1 ? "已加入导出队列（前面还有 \(pending - 1) 个）" : "已开始导出")
         }
+    }
+
+    // MARK: - 素材重连
+
+    /// 扫一遍素材库和时间线，找出所有找不到文件的素材
+    func scanMissingAssets() -> [AssetRelinker.Missing] {
+        AssetRelinker.missing(
+            libraryPaths: mediaLibrary.map { $0.url.path },
+            timelinePaths: timeline.compactMap { $0.assetURL?.path },
+            fileExists: { FileManager.default.fileExists(atPath: $0) })
+    }
+
+    /// 只更新缺失路径集合。素材变动后调一次就够，不用每次重绘都 stat 一遍文件
+    func refreshMissingAssetCount() {
+        missingAssetPaths = Set(scanMissingAssets().map(\.path))
+    }
+
+    /// 某个素材是不是已经找不到文件了（卡片上打标记用）
+    func isAssetMissing(_ asset: MediaAsset) -> Bool {
+        missingAssetPaths.contains(asset.url.path)
+    }
+
+    /// 打开重连面板（每次打开都重新扫，文件可能在别处已经修好了）
+    func presentAssetRelink() {
+        relinkCandidates = scanMissingAssets()
+        showingAssetRelink = true
+    }
+
+    /// 把某个旧路径重连到新选的文件
+    @discardableResult
+    func relinkAsset(oldPath: String, to newURL: URL) -> Int {
+        applyRelink([oldPath: newURL])
+    }
+
+    /// 选一个文件夹，按文件名批量匹配（整个目录被挪走时一次修完）
+    @discardableResult
+    func relinkAssets(inDirectory directory: URL) -> Int {
+        let missing = relinkCandidates.isEmpty ? scanMissingAssets() : relinkCandidates
+        guard !missing.isEmpty else {
+            notify("没有需要重连的素材")
+            return 0
+        }
+        let map = AssetRelinker.match(missing: missing,
+                                      candidates: AssetRelinker.contents(of: directory))
+        guard !map.isEmpty else {
+            notify("「\(directory.lastPathComponent)」里没找到同名文件")
+            return 0
+        }
+        return applyRelink(map)
+    }
+
+    /// 真正的落盘：改时间线引用 + 改素材库引用，其余字段一个不动
+    @discardableResult
+    private func applyRelink(_ map: [String: URL]) -> Int {
+        guard !map.isEmpty else { return 0 }
+        beginEdit()
+
+        let (updated, changed) = AssetRelinker.apply(map, to: timeline)
+        if changed > 0 { timeline = updated }
+
+        // 素材库里的引用一并改，否则素材库里还会显示「找不到文件」
+        for asset in mediaLibrary {
+            guard let new = map[asset.url.path] else { continue }
+            Task { await asset.relink(to: new) }
+        }
+
+        relinkCandidates = scanMissingAssets()
+        refreshMissingAssetCount()
+        if changed > 0 {
+            notify("已重连 \(map.count) 个素材，\(changed) 个片段恢复正常")
+        } else {
+            notify("已重连 \(map.count) 个素材")
+        }
+        return changed
     }
 
     /// 把导出队列的状态接到顶部进度浮层上

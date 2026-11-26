@@ -200,8 +200,10 @@ enum MediaType: String, Codable {
 
 final class MediaAsset: ObservableObject, Identifiable {
     let id: UUID
-    let url: URL
-    let type: MediaType
+    /// 路径可变：素材被移动 / 改名后要能重连到新位置，id 保持不变
+    /// 才能让集合归属和时间线引用都对得上
+    @Published private(set) var url: URL
+    @Published private(set) var type: MediaType
 
     @Published var name: String
     @Published var duration: Double = 0
@@ -223,6 +225,18 @@ final class MediaAsset: ObservableObject, Identifiable {
         let m = Int(duration) / 60
         let s = Int(duration) % 60
         return String(format: "%02d:%02d", m, s)
+    }
+
+    /// 重连到新位置：只换路径，id 与集合归属原样保留。
+    /// 元数据（时长 / 尺寸 / 缩略图）重新读一遍，因为新文件可能不是同一个素材
+    func relink(to newURL: URL) async {
+        url = newURL
+        type = MediaType.detect(from: newURL)
+        name = newURL.lastPathComponent
+        duration = 0
+        resolution = .zero
+        thumbnail = nil
+        await loadMetadata()
     }
 
     func loadMetadata() async {
