@@ -32,6 +32,12 @@ struct MainWindowView: View {
             AssetRelinkView()
                 .environmentObject(appState)
         }
+        .sheet(isPresented: $appState.showingAutoDuck) {
+            if let id = appState.autoDuckTargetID {
+                AutoDuckView(targetID: id)
+                    .environmentObject(appState)
+            }
+        }
         .sheet(item: $appState.preflightReport) { report in
             PreflightView(report: report,
                           onContinue: { appState.proceedExportAfterPreflight() },

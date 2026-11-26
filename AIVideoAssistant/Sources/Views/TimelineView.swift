@@ -251,6 +251,10 @@ struct TimelineView: View {
                         onDelete: {
                             appState.select(item.id, additive: false)
                             appState.removeSelectedItem()
+                        },
+                        onAutoDuck: {
+                            appState.select(item.id, additive: false)
+                            appState.presentAutoDuck(for: item)
                         })
             .offset(x: CGFloat(item.startTime) * pps)
             .zIndex(appState.selectedItemIDs.contains(item.id) ? 2 : 1)
@@ -676,6 +680,8 @@ struct ClipView: View {
     var onTrimEnd: (CGSize, Bool) -> Void
     var onDuplicate: () -> Void = {}
     var onDelete: () -> Void = {}
+    /// 音频片段才用得上：按配音生成闪避包络
+    var onAutoDuck: () -> Void = {}
 
     @State private var hovering = false
 
@@ -822,6 +828,11 @@ struct ClipView: View {
         .contextMenu {
             Button("复制一份") {
                 onDuplicate()
+            }
+            if item.type == .audio {
+                Button("按配音自动闪避…") {
+                    onAutoDuck()
+                }
             }
             Button("删除") {
                 onDelete()

@@ -51,6 +51,10 @@ final class AppState: ObservableObject {
     @Published var showingAssetRelink = false
     /// 面板里列出的缺失素材（打开面板时扫一次）
     @Published var relinkCandidates: [AssetRelinker.Missing] = []
+    /// 音乐自动闪避面板
+    @Published var showingAutoDuck = false
+    /// 闪避的目标片段（被压音量的那条）
+    @Published var autoDuckTargetID: UUID?
     /// 找不到文件的素材路径集合。用集合而不是计数，素材卡片才能标出哪一张丢了
     @Published var missingAssetPaths: Set<String> = []
     /// 提示条上的数字
@@ -1416,6 +1420,68 @@ final class AppState: ObservableObject {
             let pending = ExportQueue.shared.pendingCount
             self.notify(pending > 1 ? "已加入导出队列（前面还有 \(pending - 1) 个）" : "已开始导出")
         }
+    }
+
+    // MARK: - 音乐自动闪避
+
+    /// 打开闪避面板。只有音频片段才有意义
+    func presentAutoDuck(for item: TimelineItem) {
+        guard item.type == .audio else {
+            notify("只有音频片段能闪避")
+            return
+        }
+        autoDuckTargetID = item.id
+        showingAutoDuck = true
+    }
+
+    /// 当参考用的片段：其他音频轨上的片段。
+    /// 不跨视频轨取声音——那会把视频自带的环境音也当成「人声」压音乐
+    func duckReferenceClips(for item: TimelineItem) -> [TimelineItem] {
+        timeline
+            .filter { $0.type == .audio && $0.id != item.id && $0.trackLane != item.trackLane }
+            .sorted { $0.startTime < $1.startTime }
+    }
+
+    /// 分析参考片段的语音区间，返回**时间线绝对时间**。
+    /// 解码在后台队列，长配音不会卡界面
+    func speechIntervals(inReference clips: [TimelineItem]) async -> [ClosedRange<Double>] {
+        var result: [ClosedRange<Double>] = []
+        for clip in clips {
+            guard let url = clip.assetURL else { continue }
+            let analysis = await withCheckedContinuation { (continuation: CheckedContinuation<SpeechAnalysis?, Never>) in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    continuation.resume(returning: SilenceDetector.analyze(url: url))
+                }
+            }
+            guard let analysis else { continue }
+
+            let mapped = AudioDucker.toTimeline(analysis.speech,
+                                                clipStart: clip.startTime,
+                                                sourceStart: clip.sourceStart,
+                                                speed: clip.properties.speed)
+            // 片段被裁剪过时，语音区间可能伸出片外，裁掉
+            for range in mapped {
+                let lo = max(range.lowerBound, clip.startTime)
+                let hi = min(range.upperBound, clip.endTime)
+                guard hi - lo > 0.02 else { continue }
+                result.append(lo...hi)
+            }
+        }
+        return result.sorted { $0.lowerBound < $1.lowerBound }
+    }
+
+    /// 把算好的包络写进目标片段的音量关键帧
+    func applyDuckEnvelope(_ points: [AudioDucker.Point], to item: TimelineItem) {
+        guard points.count >= 2 else {
+            notify("这段区间里没有语音，不用闪避")
+            return
+        }
+        guard let index = timeline.firstIndex(where: { $0.id == item.id }) else { return }
+        beginEdit()
+        var copy = timeline[index]
+        copy.properties.setKeyframes(AudioDucker.keyframes(from: points), for: .volume)
+        timeline[index] = copy
+        notify("已生成 \(points.count) 个音量关键帧，可在「关键帧」里微调")
     }
 
     // MARK: - 素材重连
