@@ -119,19 +119,22 @@ struct SettingsView: View {
             if tab <= 1 {
                 Button("测试连接") { testConnection() }
                     .buttonStyle(SoftButtonStyle())
-            }
-            Spacer()
-            Button(tab <= 1 ? "取消" : "关闭") { dismiss() }
-                .buttonStyle(SoftButtonStyle())
-            Button(tab <= 1 ? "保存" : "完成") {
-                if tab <= 1 {
+                Spacer()
+                Button("取消") { dismiss() }
+                    .buttonStyle(SoftButtonStyle())
+                Button("保存") {
                     appState.aiConfig = draft
                     AIConfigManager.shared.save(draft)
                     appState.notify("设置已保存到钥匙串")
+                    dismiss()
                 }
-                dismiss()
+                .buttonStyle(PrimaryButtonStyle())
+            } else {
+                // 「关闭」和「完成」做的是同一件事，两个都放只是让人犹豫点哪个
+                Spacer()
+                Button("完成") { dismiss() }
+                    .buttonStyle(PrimaryButtonStyle())
             }
-            .buttonStyle(PrimaryButtonStyle())
         }
         .padding(.horizontal, 14)
         .frame(height: 50)
@@ -396,7 +399,7 @@ struct SettingsView: View {
 
             Text("AI 视频助手")
                 .font(.system(size: 18, weight: .semibold))
-            Text("版本 1.0.0 · macOS 13+")
+            Text("版本 \(Self.versionText) · macOS 13+")
                 .font(.system(size: 11.5))
                 .foregroundStyle(Theme.text3)
             Text("用 AI 讲一个好故事")
@@ -410,10 +413,30 @@ struct SettingsView: View {
             }
             .padding(.top, 6)
 
+            Button {
+                AppLog.revealLogFile()
+            } label: {
+                Label("打开日志文件", systemImage: "doc.text.magnifyingglass")
+            }
+            .buttonStyle(SoftButtonStyle())
+            .padding(.top, 10)
+
+            Text("导出或导入出问题时，把这个文件发我就能定位")
+                .font(.system(size: 10.5))
+                .foregroundStyle(Theme.text3)
+
             Spacer()
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 12)
+    }
+
+    /// 版本号从 bundle 读，别在界面里写死一份——发版时最容易忘的就是它
+    private static var versionText: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "dev"
+        let build = info?["CFBundleVersion"] as? String ?? "0"
+        return "\(short) (\(build))"
     }
 
     // MARK: - 组件

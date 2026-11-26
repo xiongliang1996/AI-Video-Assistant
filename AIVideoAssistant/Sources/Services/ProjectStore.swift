@@ -127,9 +127,15 @@ final class ProjectStore {
     }
 
     func save(_ snapshot: ProjectSnapshot) throws {
-        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
-        let data = try encoder.encode(snapshot)
-        try data.write(to: url(for: snapshot.project.id), options: .atomic)
+        do {
+            try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+            let data = try encoder.encode(snapshot)
+            try data.write(to: url(for: snapshot.project.id), options: .atomic)
+        } catch {
+            // 自动保存失败是最难发现的一类问题：用户以为存了，其实没有
+            AppLog.error(.project, "保存项目失败「\(snapshot.project.name)」：\(error.localizedDescription)")
+            throw error
+        }
     }
 
     func load(id: UUID) throws -> ProjectSnapshot {
@@ -149,7 +155,11 @@ final class ProjectStore {
         }
         var summaries: [ProjectSummary] = []
         for file in files where file.pathExtension == "json" {
-            guard let snapshot = try? load(from: file) else { continue }
+            guard let snapshot = try? load(from: file) else {
+                // 一个坏文件不该让整个项目列表打不开，但得留下痕迹
+                AppLog.warning(.project, "项目文件读取失败：\(file.lastPathComponent)")
+                continue
+            }
             let duration = snapshot.timeline.map(\.endTime).max() ?? 0
             summaries.append(ProjectSummary(id: snapshot.project.id,
                                             project: snapshot.project,

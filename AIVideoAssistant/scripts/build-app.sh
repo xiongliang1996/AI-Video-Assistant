@@ -3,6 +3,13 @@
 # 打包 .app 应用包
 # 用法: ./scripts/build-app.sh [release|debug]
 #
+# 环境变量:
+#   UNIVERSAL=1  同时编 arm64 + x86_64，用 lipo 合成通用二进制（CI 默认开）
+#
+# 为什么要分开编再 lipo：SwiftPM 的 `--arch a --arch b` 走的是 Xcode 构建系统，
+# 只装了命令行工具（没有完整 Xcode）的机器上会报 xcbuild 不存在。
+# 分两次单架构编译再合并，纯 SwiftPM 就能跑。
+#
 
 set -euo pipefail
 
@@ -12,12 +19,28 @@ cd "$ROOT"
 CONFIG="${1:-release}"
 APP_NAME="AI视频助手"
 EXEC_NAME="AIVideoAssistant"
+UNIVERSAL="${UNIVERSAL:-0}"
 
-echo "==> 编译 (${CONFIG})"
-swift build -c "$CONFIG" --disable-sandbox
+echo "==> 编译 (${CONFIG}${UNIVERSAL:+, universal=$UNIVERSAL})"
 
-BIN_DIR="$(swift build -c "$CONFIG" --disable-sandbox --show-bin-path)"
-BIN="$BIN_DIR/$EXEC_NAME"
+if [ "$UNIVERSAL" = "1" ]; then
+  swift build -c "$CONFIG" --arch arm64 --disable-sandbox
+  swift build -c "$CONFIG" --arch x86_64 --disable-sandbox
+
+  ARM_DIR="$(swift build -c "$CONFIG" --arch arm64 --disable-sandbox --show-bin-path)"
+  X86_DIR="$(swift build -c "$CONFIG" --arch x86_64 --disable-sandbox --show-bin-path)"
+  BIN_DIR="$ARM_DIR"
+  BIN="$BIN_DIR/$EXEC_NAME"
+
+  echo "==> 合成通用二进制"
+  lipo -create "$ARM_DIR/$EXEC_NAME" "$X86_DIR/$EXEC_NAME" -output "$BIN.universal"
+  mv "$BIN.universal" "$BIN"
+  lipo -info "$BIN"
+else
+  swift build -c "$CONFIG" --disable-sandbox
+  BIN_DIR="$(swift build -c "$CONFIG" --disable-sandbox --show-bin-path)"
+  BIN="$BIN_DIR/$EXEC_NAME"
+fi
 
 if [ ! -f "$BIN" ]; then
   echo "!! 找不到可执行文件: $BIN"
@@ -54,4 +77,5 @@ echo ""
 echo "✅ 构建完成"
 echo "   App: $APP"
 echo "   Zip: $ZIP"
+file "$APP/Contents/MacOS/$EXEC_NAME" | sed 's/^/   /'
 du -sh "$APP" "$ZIP" 2>/dev/null || true

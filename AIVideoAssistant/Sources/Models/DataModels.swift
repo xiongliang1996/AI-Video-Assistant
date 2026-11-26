@@ -246,12 +246,18 @@ final class MediaAsset: ObservableObject, Identifiable {
         var loadedDuration: Double = 0
         var loadedSize: CGSize = .zero
 
-        if let d = try? await asset.load(.duration) {
-            loadedDuration = CMTimeGetSeconds(d)
+        do {
+            loadedDuration = CMTimeGetSeconds(try await asset.load(.duration))
+        } catch {
+            // 之前是 try? 静默吞掉：导入坏文件后用户只看到 0 秒素材，一点线索都没有
+            AppLog.error(.media, "读取时长失败 \(url.lastPathComponent)：\(error.localizedDescription)")
         }
-        if let track = try? await asset.loadTracks(withMediaType: .video).first,
-           let size = try? await track.load(.naturalSize) {
-            loadedSize = size
+        do {
+            if let track = try await asset.loadTracks(withMediaType: .video).first {
+                loadedSize = try await track.load(.naturalSize)
+            }
+        } catch {
+            AppLog.error(.media, "读取画面尺寸失败 \(url.lastPathComponent)：\(error.localizedDescription)")
         }
 
         var image: NSImage?
@@ -266,6 +272,11 @@ final class MediaAsset: ObservableObject, Identifiable {
 
         let dur = loadedDuration
         let size = loadedSize
+        if dur <= 0 {
+            // 文件不在了 / 编码不认识，都会走到这里。素材在时间线上占 0 秒，看起来像「拖进去没反应」
+            let exists = FileManager.default.fileExists(atPath: url.path)
+            AppLog.warning(.media, "素材时长为 0 \(url.lastPathComponent)（文件\(exists ? "存在" : "不存在")）")
+        }
         let box = ImageBox(image: image)
         await MainActor.run {
             self.duration = dur

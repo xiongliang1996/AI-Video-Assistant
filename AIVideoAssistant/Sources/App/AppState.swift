@@ -154,6 +154,12 @@ final class AppState: ObservableObject {
     private var terminateObserver: NSObjectProtocol?
 
     private init() {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "dev"
+        let build = info?["CFBundleVersion"] as? String ?? "0"
+        let os = ProcessInfo.processInfo.operatingSystemVersionString
+        AppLog.info(.app, "启动 v\(short)(\(build)) · \(os) · \(AppLog.fileURL.path)")
+
         self.aiConfig = AIConfigManager.shared.load()
         self.customExportPresets = ExportPresetStore.load()
 
@@ -1259,6 +1265,7 @@ final class AppState: ObservableObject {
                     if self.isPlaying { player.play() }
                 }
             } catch {
+                AppLog.error(.app, "预览合成失败：\(error.localizedDescription)")
                 await MainActor.run {
                     guard generation == self.previewGeneration else { return }
                     self.previewStatus = "预览不可用"
@@ -1647,6 +1654,7 @@ final class AppState: ObservableObject {
 
     func showError(_ message: String) {
         errorMessage = message
+        AppLog.error(.app, message)
     }
 
     func clearError() {

@@ -37,6 +37,9 @@ jobs:
 
       - name: Build app bundle
         working-directory: AIVideoAssistant
+        env:
+          # arm64 + x86_64 各编一遍再 lipo：Intel 机器上也能出通用二进制
+          UNIVERSAL: "1"
         run: |
           chmod +x scripts/build-app.sh
           ./scripts/build-app.sh release
@@ -46,6 +49,13 @@ jobs:
           ls -la AIVideoAssistant/dist
           plutil -lint "AIVideoAssistant/dist/AI视频助手.app/Contents/Info.plist"
           file "AIVideoAssistant/dist/AI视频助手.app/Contents/MacOS/AIVideoAssistant"
+          echo "--- 架构检查 ---"
+          lipo -archs "AIVideoAssistant/dist/AI视频助手.app/Contents/MacOS/AIVideoAssistant"
+          lipo -archs "AIVideoAssistant/dist/AI视频助手.app/Contents/MacOS/AIVideoAssistant" | grep -q arm64
+          lipo -archs "AIVideoAssistant/dist/AI视频助手.app/Contents/MacOS/AIVideoAssistant" | grep -q x86_64
+          echo "✅ 通用二进制（arm64 + x86_64）"
+          echo "--- 图标检查 ---"
+          test -f "AIVideoAssistant/dist/AI视频助手.app/Contents/Resources/AppIcon.icns"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

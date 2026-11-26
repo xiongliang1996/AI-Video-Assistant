@@ -145,6 +145,17 @@ final class OpenAIService: VideoGeneratingService {
 
     // MARK: - 网络辅助
 
+    /// 失败时把「哪条接口 + HTTP 状态码 + 服务端原话」一起记下来。
+    /// 光有 localizedDescription 是不够的：OpenAI 的 400 会在 body 里说清哪个参数不对。
+    private static func logFailure(path: String, response: AFDataResponse<some Any>, error: Error) {
+        let status = response.response?.statusCode ?? -1
+        var detail = ""
+        if let data = response.data, let text = String(data: data, encoding: .utf8), !text.isEmpty {
+            detail = " · " + text.prefix(300)
+        }
+        AppLog.error(.ai, "\(path) 失败 HTTP \(status)：\(error.localizedDescription)\(detail)")
+    }
+
     private func postJSON(path: String, parameters: [String: Any]) async throws -> [String: Any] {
         try await withCheckedThrowingContinuation { continuation in
             AF.request(baseURL + path,
@@ -157,11 +168,13 @@ final class OpenAIService: VideoGeneratingService {
                 switch response.result {
                 case .success(let value):
                     guard let json = value as? [String: Any] else {
+                        AppLog.error(.ai, "\(path) 返回的不是 JSON 对象")
                         continuation.resume(throwing: AIError.invalidResponse)
                         return
                     }
                     continuation.resume(returning: json)
                 case .failure(let error):
+                    Self.logFailure(path: path, response: response, error: error)
                     continuation.resume(throwing: AIError.requestFailed(error.localizedDescription))
                 }
             }
@@ -181,6 +194,7 @@ final class OpenAIService: VideoGeneratingService {
                 case .success(let data):
                     continuation.resume(returning: data)
                 case .failure(let error):
+                    Self.logFailure(path: path, response: response, error: error)
                     continuation.resume(throwing: AIError.requestFailed(error.localizedDescription))
                 }
             }

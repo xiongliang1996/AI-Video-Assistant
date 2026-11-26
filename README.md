@@ -46,6 +46,8 @@
 - **导出队列**：`⌘E` 入队、串行执行，排队期间可以继续剪；`⌘⇧E` 看进度、取消（取消会清掉写了一半的文件）、在访达里定位成品
 - **仅导出音频**：`⌘⌥E` 或工具栏的「仅音频」，只出混好的 M4A——播客 / 口播交付只要声音时不用渲染画面。它和视频导出共用同一个队列，音量包络、淡入淡出、变速都照常算进去；时间线上没有声音会明确报错，不会给你一个空文件
 - **导出前体检**：点导出先扫一遍时间线，把「能导出、但成片不是你要的」问题列清楚——素材文件丢了、片段比素材长、转场不会生效、同轨重叠、字幕跑到片尾之后或显示太短、画幅和成片比例不一致、画面空隙会变黑场、画中画下面没有主画面或小到看不清。按严重程度分三级，能直接「仍然导出」
+- **通用二进制**：一份 `.app` 同时带 arm64 与 x86_64，Intel Mac 和 Apple Silicon 都不用另找版本
+- **可查的日志**：所有关键动作和失败原因同时写进 `~/Library/Logs/AIVideoAssistant/app.log`（超过 512 KB 自动滚一份旧的），设置 → 关于里有「打开日志文件」。素材读不出时长、项目文件坏了、导出失败、AI 接口报错都会留下 HTTP 状态码和服务端原话，出问题不用靠猜
 
 ### 体验
 - 全原生 SwiftUI 界面，深浅色自适应
@@ -135,7 +137,7 @@ open dist/AI视频助手.app
 ├── Design/ui-prototype.html        # 可点击交互原型
 └── AIVideoAssistant/
     ├── Package.swift               # SwiftPM 清单
-    ├── scripts/build-app.sh        # 本地打包脚本
+    ├── scripts/build-app.sh        # 本地打包脚本（UNIVERSAL=1 出 arm64 + x86_64 通用二进制）
     ├── scripts/make-icon.swift     # 设计稿 → .icns（抠白底 / 缩进 / 切圆角）
     ├── Support/Info.plist
     └── Sources/
@@ -145,6 +147,7 @@ open dist/AI视频助手.app
         │   ├── AI/                 # OpenAI / TTS / 配置管理
         │   ├── Audio/              # 波形分析 + 停顿检测（RMS → dBFS）；AudioDucker：自动闪避包络（纯函数）
         │   ├── Media/              # MediaShelf：素材检索 / 排序 / 分组 / 拖动重排 / 引用统计；AssetRelinker：素材重连（纯函数）
+        │   ├── Diagnostics/        # AppLog：os_log + 落盘日志（分级 / 分类 / 512KB 滚动）
         │   ├── Editing/            # FadeGeometry：淡入淡出手柄的吸附 / 限位 / 落点（纯函数）
         │   ├── Text/               # SubtitleComposer：断句 + 按停顿对齐；SubtitleTiming：时间微调（纯函数）
         │   ├── ProjectStore.swift  # 项目读写
@@ -478,6 +481,8 @@ AVFoundation 没有内建的 sidechain 压缩，做不了「按另一条轨的�
 - [x] 闪避参考来源可选字幕时间（字幕边界当语音区间，不用解码音频，标题卡不参与）
 - [x] 应用图标（从设计稿抠白底、按 macOS 图标网格缩进、切圆角，生成 .icns）
 - [x] 仅导出音频（M4A，和视频共用队列）+ 导出完成自动打开成品
+- [x] 通用二进制（arm64 + x86_64 用 `lipo` 合成，CI 里校验两个架构都在）
+- [x] 落盘日志（分级 / 分类 / 512KB 滚动 + 设置页入口，素材与项目读取失败不再静默）
 - [ ] Sora 视频生成接入（等待 API 开放）
 
 ---

@@ -195,15 +195,20 @@ final class ExportQueue: ObservableObject {
                                                    progress: report)
                 }
                 await self.finish(next.id, state: .done, message: "导出完成")
+                let attrs = try? FileManager.default.attributesOfItem(atPath: next.outputURL.path)
+                let size = (attrs?[.size] as? Int) ?? 0
+                AppLog.info(.export, "「\(next.title)」完成：\(next.outputURL.path)（\(size / 1024) KB）")
             } catch let error as VideoError {
                 if case .cancelled = error {
                     await self.finish(next.id, state: .cancelled, message: "已取消")
                 } else {
+                    AppLog.error(.export, "「\(next.title)」失败：\(error.localizedDescription) → \(next.outputURL.path)")
                     await self.finish(next.id, state: .failed(error.localizedDescription), message: "失败")
                 }
             } catch is CancellationError {
                 await self.finish(next.id, state: .cancelled, message: "已取消")
             } catch {
+                AppLog.error(.export, "「\(next.title)」失败：\(error.localizedDescription) → \(next.outputURL.path)")
                 await self.finish(next.id, state: .failed(error.localizedDescription), message: "失败")
             }
         }
