@@ -390,9 +390,9 @@ struct SubtitleOverlay: View {
 
 // MARK: - 画中画拖拽层
 
-/// 预览台上直接拖画中画。
+/// 预览台上直接拖画中画：拖框内移动位置，拖四角改尺寸。
 ///
-/// 拖动过程只改本地 `liveOrigin`，松手才写回项目——每次写回都会重建预览合成，
+/// 拖动过程只改本地 `liveStyle`，松手才写回项目——每次写回都会重建预览合成，
 /// 边拖边写会卡成一帧一帧的。这也和属性面板滑杆的既有做法一致。
 struct PiPDragHandle: View {
     let item: TimelineItem
@@ -401,7 +401,8 @@ struct PiPDragHandle: View {
 
     @EnvironmentObject var appState: AppState
     @State private var startCenter: NormalizedPoint?
-    @State private var liveOrigin: NormalizedPoint?
+    @State private var resizeStart: CGRect?
+    @State private var liveStyle: PiPStyle?
     @State private var hovering = false
 
     private var style: PiPStyle { item.properties.pip }
@@ -412,14 +413,19 @@ struct PiPDragHandle: View {
         appState.mediaSize(for: item.assetURL) ?? CGSize(width: 16, height: 9)
     }
 
-    /// 当前画中画在画幅里的矩形（拖动中跟手，松手前不落盘）
+    private var aspect: CGFloat {
+        max(0.01, naturalSize.width / max(1, naturalSize.height))
+    }
+
+    /// 拖动中跟手、松手前不落盘的那份样式
+    private var currentStyle: PiPStyle { liveStyle ?? style }
+
+    /// 当前画中画在画幅里的矩形
     private var currentRect: CGRect {
         guard renderSize.width > 1, renderSize.height > 1 else { return .zero }
-        var s = style
-        s.freeOrigin = liveOrigin ?? style.freeOrigin
         return CompositionBuilder.pipRect(naturalSize: naturalSize,
                                           renderSize: renderSize,
-                                          style: s)
+                                          style: currentStyle)
     }
 
     var body: some View {
@@ -437,36 +443,40 @@ struct PiPDragHandle: View {
                               style: StrokeStyle(lineWidth: emphasized ? 1.6 : 1.1,
                                                  dash: emphasized ? [6, 4] : [4, 5]))
 
-            cornerHandles(visible: emphasized)
+            cornerHandles(fitted: fitted, visible: emphasized)
         }
         .frame(width: max(24, viewRect.width), height: max(16, viewRect.height))
         .offset(x: viewRect.minX, y: viewRect.minY)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
-        .gesture(dragGesture(fitted: fitted))
+        .gesture(moveGesture(fitted: fitted))
         .simultaneousGesture(
             TapGesture(count: 2).onEnded { resetToPreset() }
         )
-        .help("拖动自由摆放，双击回到九宫格位置")
+        .help("拖动移动位置，拖四角改尺寸，双击回到九宫格")
         .task(id: item.assetURL) { appState.requestMediaSize(for: item.assetURL) }
     }
 
-    private func cornerHandles(visible: Bool) -> some View {
+    private func cornerHandles(fitted: CGRect, visible: Bool) -> some View {
         GeometryReader { g in
             let side: CGFloat = 7
-            ForEach(0..<4, id: \.self) { index in
+            let hit: CGFloat = 22
+            ForEach(PiPCorner.allCases, id: \.self) { corner in
                 RoundedRectangle(cornerRadius: 1.5, style: .continuous)
                     .fill(Theme.accent)
                     .frame(width: side, height: side)
-                    .position(x: index % 2 == 0 ? 0 : g.size.width,
-                              y: index < 2 ? 0 : g.size.height)
-                    .opacity(visible ? 1 : 0)
+                    // 点击区比视觉大得多：7pt 的方块几乎抓不住
+                    .frame(width: hit, height: hit)
+                    .contentShape(Rectangle())
+                    .position(x: corner.isLeading ? 0 : g.size.width,
+                              y: corner.isTop ? 0 : g.size.height)
+                    .opacity(visible ? 1 : 0.001)
+                    .gesture(resizeGesture(corner, fitted: fitted))
             }
         }
-        .allowsHitTesting(false)
     }
 
-    private func dragGesture(fitted: CGRect) -> some Gesture {
+    private func moveGesture(fitted: CGRect) -> some Gesture {
         DragGesture(minimumDistance: 1)
             .onChanged { value in
                 guard fitted.width > 1, fitted.height > 1,
@@ -493,19 +503,56 @@ struct PiPDragHandle: View {
                                                  size: size,
                                                  renderSize: renderSize,
                                                  margin: style.margin)
-                liveOrigin = PiPGeometry.clampOrigin(origin,
-                                                     size: size,
-                                                     renderSize: renderSize,
-                                                     margin: style.margin)
+                origin = PiPGeometry.clampOrigin(origin,
+                                                 size: size,
+                                                 renderSize: renderSize,
+                                                 margin: style.margin)
+
+                var next = style
+                next.freeOrigin = origin
+                liveStyle = next
             }
             .onEnded { _ in
                 startCenter = nil
-                guard let origin = liveOrigin else { return }
-                liveOrigin = nil
-                var copy = item
-                copy.properties.pip.freeOrigin = origin
-                appState.updateItem(copy, recordUndo: true)
+                commitLiveStyle()
             }
+    }
+
+    private func resizeGesture(_ corner: PiPCorner, fitted: CGRect) -> some Gesture {
+        DragGesture(minimumDistance: 1)
+            .onChanged { value in
+                guard fitted.width > 1, fitted.height > 1,
+                      renderSize.width > 1, renderSize.height > 1 else { return }
+
+                if resizeStart == nil { resizeStart = currentRect }
+                guard let start = resizeStart else { return }
+
+                // 视图位移换算回画幅像素，再交给纯函数算新尺寸
+                let translation = CGSize(
+                    width: value.translation.width / fitted.width * renderSize.width,
+                    height: value.translation.height / fitted.height * renderSize.height)
+
+                liveStyle = PiPGeometry.resize(rect: start,
+                                               corner: corner,
+                                               translation: translation,
+                                               renderSize: renderSize,
+                                               margin: style.margin,
+                                               aspect: aspect,
+                                               style: style)
+            }
+            .onEnded { _ in
+                resizeStart = nil
+                commitLiveStyle()
+            }
+    }
+
+    private func commitLiveStyle() {
+        guard let next = liveStyle else { return }
+        liveStyle = nil
+        guard next != style else { return }
+        var copy = item
+        copy.properties.pip = next
+        appState.updateItem(copy, recordUndo: true)
     }
 
     private func resetToPreset() {

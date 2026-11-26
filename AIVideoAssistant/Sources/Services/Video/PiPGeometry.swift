@@ -11,6 +11,32 @@ import AVFoundation
 import CoreGraphics
 import Foundation
 
+/// 画中画的四个角。拖某个角缩放时，对角是锚点。
+enum PiPCorner: CaseIterable, Hashable {
+    case topLeading
+    case topTrailing
+    case bottomLeading
+    case bottomTrailing
+
+    var isLeading: Bool { self == .topLeading || self == .bottomLeading }
+    var isTop: Bool { self == .topLeading || self == .topTrailing }
+
+    /// 对角——拖这个角时它不动
+    var opposite: PiPCorner {
+        switch self {
+        case .topLeading: return .bottomTrailing
+        case .topTrailing: return .bottomLeading
+        case .bottomLeading: return .topTrailing
+        case .bottomTrailing: return .topLeading
+        }
+    }
+
+    func point(in rect: CGRect) -> CGPoint {
+        CGPoint(x: isLeading ? rect.minX : rect.maxX,
+                y: isTop ? rect.minY : rect.maxY)
+    }
+}
+
 enum PiPGeometry {
 
     /// 读素材的显示尺寸：已套用 preferredTransform，竖屏素材会得到「高 > 宽」。
@@ -112,5 +138,73 @@ enum PiPGeometry {
         if abs(p.x - right) < threshold { p.x = right }
         if abs(p.y - bottom) < threshold { p.y = bottom }
         return p
+    }
+
+    // MARK: - 拖角缩放
+
+    /// 拖某个角缩放，对角固定。
+    ///
+    /// 只改 `widthRatio`（高度按素材比例跟着算），并把新的左上角写进 `freeOrigin`——
+    /// 九宫格模式下拖角也会自动转成自由位置，因为「对角不动」这件事九宫格表达不了。
+    ///
+    /// 上界按锚点到画幅边缘的可用空间算，所以拖到边就停，不会先把画中画撑出画面
+    /// 再被 clamp 拽回来（那样会看到画中画「跳」一下）。
+    static func resize(rect: CGRect,
+                       corner: PiPCorner,
+                       translation: CGSize,
+                       renderSize: CGSize,
+                       margin: Double,
+                       aspect: CGFloat,
+                       style: PiPStyle) -> PiPStyle {
+        guard renderSize.width > 1, renderSize.height > 1,
+              rect.width > 0.5, rect.height > 0.5,
+              aspect.isFinite, aspect > 0.01 else { return style }
+
+        let anchor = corner.opposite.point(in: rect)
+        let moved = CGPoint(x: corner.point(in: rect).x + translation.width,
+                            y: corner.point(in: rect).y + translation.height)
+
+        // 宽度取「被拖角到锚点的水平距离」，高度按素材比例推——拖角时保持比例，
+        // 不让人把画中画拉成扁的。
+        // 这里必须按方向算而不是取 abs：鼠标越过锚点时 abs 会把负距离翻成正的，
+        // 画中画会「反向放大」——拖过对角继续拖反而越来越大。
+        let desiredWidth: CGFloat = corner.isLeading
+            ? anchor.x - moved.x      // 向左扩展
+            : moved.x - anchor.x      // 向右扩展
+
+        // 锚点这一侧还剩多少空间。
+        // 留白和 pipRect 一样统一按「画幅宽 × margin」折算像素，上下方向也用同一个值，
+        // 否则拖到上下边会比左右更早停，看着像卡住了
+        let marginPx = CGFloat(margin) * renderSize.width
+        let maxWidth: CGFloat = corner.isLeading
+            ? anchor.x - marginPx
+            : renderSize.width - marginPx - anchor.x
+        let maxHeight: CGFloat = corner.isTop
+            ? anchor.y - marginPx
+            : renderSize.height - marginPx - anchor.y
+        let limit = max(1, min(maxWidth, maxHeight * aspect))
+
+        let lower = renderSize.width * CGFloat(PiPStyle.widthRange.lowerBound)
+        let upper = max(lower, min(renderSize.width * CGFloat(PiPStyle.widthRange.upperBound), limit))
+        let width = min(max(desiredWidth, lower), upper)
+        let height = width / aspect
+
+        let origin: CGPoint
+        switch corner {
+        case .bottomTrailing:
+            origin = anchor
+        case .topLeading:
+            origin = CGPoint(x: anchor.x - width, y: anchor.y - height)
+        case .topTrailing:
+            origin = CGPoint(x: anchor.x, y: anchor.y - height)
+        case .bottomLeading:
+            origin = CGPoint(x: anchor.x - width, y: anchor.y)
+        }
+
+        var result = style
+        result.widthRatio = Double(width / renderSize.width)
+        result.freeOrigin = NormalizedPoint(x: Double(origin.x / renderSize.width),
+                                            y: Double(origin.y / renderSize.height))
+        return result.sanitized
     }
 }
