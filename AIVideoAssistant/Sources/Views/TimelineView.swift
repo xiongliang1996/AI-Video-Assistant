@@ -23,6 +23,11 @@ struct TimelineView: View {
     @State private var dragUpperDelta: Double = .greatestFiniteMagnitude
     @State private var dragGroupIDs: Set<UUID> = []
     @State private var dragGroupStarts: [UUID: Double] = [:]
+    /// 拖淡入淡出手柄时的起点快照：和裁剪一样，一次拖拽只记一个撤销点
+    @State private var fadeOrigin: TimelineItem?
+    @State private var fadeEdge: FadeEdge?
+    @State private var fadeHint: String?
+    @State private var fadeHintEdge: FadeEdge?
 
     private let basePPS: CGFloat = 26
     private let trackHeight: CGFloat = 46
@@ -231,6 +236,9 @@ struct TimelineView: View {
                         tileWidth: thumbTileWidth,
                         transitionStatus: status,
                         transitionWidth: overlapWidth,
+                        pps: pps,
+                        fadeHintEdge: fadeHintEdge,
+                        fadeHintText: fadeHint,
                         onSelect: {
                             appState.select(item.id,
                                             additive: NSEvent.modifierFlags.contains(.command))
@@ -255,6 +263,20 @@ struct TimelineView: View {
                         onAutoDuck: {
                             appState.select(item.id, additive: false)
                             appState.presentAutoDuck(for: item)
+                        },
+                        onFadeIn: { translation, ended in
+                            handleFade(item, edge: .fadeIn, translation: translation, ended: ended)
+                        },
+                        onFadeOut: { translation, ended in
+                            handleFade(item, edge: .fadeOut, translation: translation, ended: ended)
+                        },
+                        onClearFade: {
+                            appState.select(item.id, additive: false)
+                            appState.beginEdit()
+                            var copy = item
+                            copy.properties.fadeIn = 0
+                            copy.properties.fadeOut = 0
+                            appState.updateItem(copy)
                         })
             .offset(x: CGFloat(item.startTime) * pps)
             .zIndex(appState.selectedItemIDs.contains(item.id) ? 2 : 1)
@@ -456,6 +478,53 @@ struct TimelineView: View {
             snapTime = snapped
             appState.updateItem(updated)
         }
+    }
+
+    /// 拖上边缘的淡入淡出手柄。
+    ///
+    /// 起点取按下时的快照、位移每帧从 0 重算，所以拖过头再拖回来能原路返回，
+    /// 不会因为逐帧累加而漂移。
+    private func handleFade(_ item: TimelineItem,
+                            edge: FadeEdge,
+                            translation: CGSize,
+                            ended: Bool) {
+        if ended {
+            fadeOrigin = nil
+            fadeEdge = nil
+            fadeHint = nil
+            fadeHintEdge = nil
+            return
+        }
+
+        if fadeOrigin?.id != item.id || fadeEdge != edge {
+            fadeOrigin = item
+            fadeEdge = edge
+            appState.beginEdit()
+        }
+        guard let origin = fadeOrigin else { return }
+
+        if !appState.selectedItemIDs.contains(item.id) {
+            appState.select(item.id, additive: false)
+        }
+
+        let other = edge == .fadeIn ? origin.properties.fadeOut : origin.properties.fadeIn
+        let start = edge == .fadeIn ? origin.properties.fadeIn : origin.properties.fadeOut
+        let value = FadeGeometry.value(origin: start,
+                                       translation: translation.width,
+                                       pps: pps,
+                                       duration: origin.duration,
+                                       other: other,
+                                       edge: edge)
+
+        var copy = appState.timeline.first(where: { $0.id == item.id }) ?? origin
+        if edge == .fadeIn {
+            copy.properties.fadeIn = value
+        } else {
+            copy.properties.fadeOut = value
+        }
+        appState.updateItem(copy)
+        fadeHintEdge = edge
+        fadeHint = String(format: "%.2f s", value)
     }
 
     /// 拖拽开始时算好整组可移动的偏移范围，避免多选时互相挤压
@@ -673,6 +742,11 @@ struct ClipView: View {
     var transitionStatus: TransitionStatus = .unset
     /// 转场重叠区间在时间线上的像素宽度
     var transitionWidth: CGFloat = 0
+    /// 每秒像素数：淡入淡出手柄靠它把「秒」换算成「像素」
+    var pps: CGFloat = 26
+    /// 正在拖淡入 / 淡出手柄时显示的数值气泡
+    var fadeHintEdge: FadeEdge?
+    var fadeHintText: String?
 
     var onSelect: () -> Void
     var onMove: (CGSize, Bool) -> Void
@@ -682,6 +756,10 @@ struct ClipView: View {
     var onDelete: () -> Void = {}
     /// 音频片段才用得上：按配音生成闪避包络
     var onAutoDuck: () -> Void = {}
+    /// 拖片段上边缘的淡入 / 淡出手柄
+    var onFadeIn: (CGSize, Bool) -> Void = { _, _ in }
+    var onFadeOut: (CGSize, Bool) -> Void = { _, _ in }
+    var onClearFade: () -> Void = {}
 
     @State private var hovering = false
 
@@ -690,6 +768,54 @@ struct ClipView: View {
         let raw = Int(width / 4)
         let rounded = max(16, min(96, (raw / 8) * 8))
         return rounded
+    }
+
+    // MARK: 淡入淡出
+
+    /// 字幕没有淡入淡出（烧录时按整句出现），其余类型都能拖
+    private var supportsFade: Bool { item.type != .subtitle }
+
+    /// 有关键帧时整段曲线交给关键帧，淡入淡出不再叠加
+    private var fadeKeyed: Bool {
+        item.type == .audio
+            ? !item.properties.keyframes(for: .volume).isEmpty
+            : !item.properties.keyframes(for: .opacity).isEmpty
+    }
+
+    /// 入场转场生效时淡入由转场接管，拖了也没用
+    private var fadeInDimmed: Bool {
+        !FadeGeometry.isEffective(edge: .fadeIn,
+                                  inTransitionActive: transitionStatus.isActive,
+                                  hasOpacityKeyframes: fadeKeyed)
+    }
+
+    private var fadeOutDimmed: Bool { fadeKeyed }
+
+    private var fadeOverlay: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let fin = min(CGFloat(max(0, item.properties.fadeIn)) * pps, w)
+            let fout = min(CGFloat(max(0, item.properties.fadeOut)) * pps, w)
+            ZStack(alignment: .topLeading) {
+                if fin > 1 {
+                    FadeWedge(start: 0, end: fin, rising: true)
+                        .fill(Color.black.opacity(fadeInDimmed ? 0.10 : 0.30))
+                    FadeRamp(start: 0, end: fin, rising: true)
+                        .stroke(Color.white.opacity(fadeInDimmed ? 0.35 : 0.85),
+                                style: StrokeStyle(lineWidth: 1.2,
+                                                   dash: fadeInDimmed ? [3, 3] : []))
+                }
+                if fout > 1 {
+                    FadeWedge(start: w - fout, end: w, rising: false)
+                        .fill(Color.black.opacity(fadeOutDimmed ? 0.10 : 0.30))
+                    FadeRamp(start: w - fout, end: w, rising: false)
+                        .stroke(Color.white.opacity(fadeOutDimmed ? 0.35 : 0.85),
+                                style: StrokeStyle(lineWidth: 1.2,
+                                                   dash: fadeOutDimmed ? [3, 3] : []))
+                }
+            }
+        }
+        .allowsHitTesting(false)
     }
 
     var body: some View {
@@ -741,6 +867,10 @@ struct ClipView: View {
                     }
                 }
         )
+        .overlay {
+            // 衰减区画在波形之上、裁剪之内，一眼看出这段从静音升上来
+            if supportsFade { fadeOverlay }
+        }
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         .overlay(alignment: .topLeading) {
             if item.transition != .none {
@@ -807,6 +937,21 @@ struct ClipView: View {
                 handle(isLeading: false)
             }
         }
+        // 淡入淡出手柄：抓上边缘调淡入淡出，抓中间仍是裁剪
+        .overlay(alignment: .topLeading) {
+            if supportsFade, selected || hovering, width >= 24 {
+                fadeHandle(edge: .fadeIn, dimmed: fadeInDimmed)
+                    .offset(x: FadeGeometry.handleX(item.properties.fadeIn, pps: pps, width: width) - 7,
+                            y: -3)
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            if supportsFade, selected || hovering, width >= 24 {
+                fadeHandle(edge: .fadeOut, dimmed: fadeOutDimmed)
+                    .offset(x: width - FadeGeometry.handleX(item.properties.fadeOut, pps: pps, width: width) - 7,
+                            y: -3)
+            }
+        }
         .overlay(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .stroke(selected ? Theme.accent : Color.white.opacity(0.45),
@@ -834,12 +979,57 @@ struct ClipView: View {
                     onAutoDuck()
                 }
             }
+            if supportsFade, item.properties.fadeIn > 0.02 || item.properties.fadeOut > 0.02 {
+                Button("清除淡入淡出") {
+                    onClearFade()
+                }
+            }
             Button("删除") {
                 onDelete()
             }
             Divider()
             Text(laneLabel)
         }
+    }
+
+    /// 淡入淡出手柄：7pt 圆点压在片段上边缘（让开文字那一行），命中区 14pt
+    private func fadeHandle(edge: FadeEdge, dimmed: Bool) -> some View {
+        Circle()
+            .fill(dimmed ? Color.white.opacity(0.7) : Color.white)
+            .frame(width: 7, height: 7)
+            .overlay(Circle().stroke(Color.black.opacity(0.22), lineWidth: 1))
+            .shadow(color: .black.opacity(0.3), radius: 1, y: 0.5)
+            .frame(width: 14, height: 14)
+            .contentShape(Rectangle())
+            .help(dimmed ? "\(edge.label)此刻不生效（关键帧或入场转场接管了）" : "拖动调整\(edge.label)")
+            .onHover { inside in
+                if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+            }
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        if edge == .fadeIn { onFadeIn(value.translation, false) }
+                        else { onFadeOut(value.translation, false) }
+                    }
+                    .onEnded { value in
+                        if edge == .fadeIn { onFadeIn(value.translation, true) }
+                        else { onFadeOut(value.translation, true) }
+                    }
+            )
+            .overlay(alignment: .top) {
+                if let fadeHintText, fadeHintEdge == edge {
+                    Text(fadeHintText)
+                        .font(.system(size: 9, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1.5)
+                        .background(Capsule().fill(Theme.accent))
+                        .fixedSize()
+                        .offset(y: -16)
+                        .allowsHitTesting(false)
+                }
+            }
     }
 
     /// 右键菜单末尾显示这条片段在哪条轨道上，多选后也能确认自己点的是哪条
@@ -886,5 +1076,45 @@ struct ClipView: View {
                         }
                     }
             )
+    }
+}
+
+// MARK: - 淡入淡出形状
+
+/// 淡入淡出的「衰减区」：音量为 0 的那块三角，压暗之后一眼看出斜坡方向
+private struct FadeWedge: Shape {
+    var start: CGFloat
+    var end: CGFloat
+    /// true = 淡入（左下角升到右上角）
+    var rising: Bool
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let h = rect.height
+        path.move(to: CGPoint(x: start, y: 0))
+        path.addLine(to: CGPoint(x: end, y: 0))
+        path.addLine(to: CGPoint(x: rising ? start : end, y: h))
+        path.closeSubpath()
+        return path
+    }
+}
+
+/// 淡入淡出的包络线本身（合成器里就是线性 ramp，画曲线会骗人）
+private struct FadeRamp: Shape {
+    var start: CGFloat
+    var end: CGFloat
+    var rising: Bool
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let h = rect.height
+        if rising {
+            path.move(to: CGPoint(x: start, y: h))
+            path.addLine(to: CGPoint(x: end, y: 0))
+        } else {
+            path.move(to: CGPoint(x: start, y: 0))
+            path.addLine(to: CGPoint(x: end, y: h))
+        }
+        return path
     }
 }

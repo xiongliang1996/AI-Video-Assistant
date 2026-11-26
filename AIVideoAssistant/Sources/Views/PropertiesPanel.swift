@@ -385,16 +385,41 @@ struct PropertiesPanel: View {
 
             groupHeader("circle.dotted", "淡入淡出")
 
+            // 上限和合成器一致：单侧最多片段时长的一半，拖过一半画面不会更淡
+            let fadeCap = max(0.2, FadeGeometry.maxLength(duration: item.duration, other: 0))
+
             SliderRow(label: "淡入",
                       value: prop(item, \.fadeIn),
-                      range: 0...2,
+                      range: 0...fadeCap,
                       display: String(format: "%.1f s", item.properties.fadeIn))
 
             SliderRow(label: "淡出",
                       value: prop(item, \.fadeOut),
-                      range: 0...2,
+                      range: 0...fadeCap,
                       display: String(format: "%.1f s", item.properties.fadeOut))
+
+            if item.type != .subtitle {
+                let keyed = item.type == .audio
+                    ? !item.properties.keyframes(for: .volume).isEmpty
+                    : !item.properties.keyframes(for: .opacity).isEmpty
+                if keyed {
+                    fadeNote("这段已经有关键帧，淡入淡出不再叠加。")
+                } else if item.transition != .none,
+                          appState.transitionStatus(for: item).isActive {
+                    fadeNote("入场转场生效时，淡入由转场接管。")
+                } else {
+                    fadeNote("也可以直接在时间线片段上边缘拖圆点调。")
+                }
+            }
         }
+    }
+
+    private func fadeNote(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 10.5))
+            .foregroundStyle(Theme.text3)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, 3)
     }
 
     /// 转场类型 + 过渡时长（画中画不显示这一组）
