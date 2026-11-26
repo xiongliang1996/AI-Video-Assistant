@@ -280,8 +280,14 @@ struct PreviewStage: View {
 
     var body: some View {
         GeometryReader { geo in
-            let videoHeight = max(120, min(geo.size.height - 20, (geo.size.width - 32) * 9 / 16))
-            let videoWidth = max(200, videoHeight * 16 / 9)
+            // 画框跟随项目画幅比例：竖屏项目以前被塞进 16:9 框里，画面只占中间一条
+            let target = appState.currentProject.settings.resolution.size
+            let availWidth = max(200, geo.size.width - 32)
+            let availHeight = max(120, geo.size.height - 20)
+            let scale = min(availWidth / max(1, target.width),
+                            availHeight / max(1, target.height))
+            let videoWidth = max(160, (target.width * scale).rounded())
+            let videoHeight = max(90, (target.height * scale).rounded())
 
             ZStack(alignment: .bottom) {
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
@@ -294,6 +300,15 @@ struct PreviewStage: View {
 
                 if let player = appState.previewPlayer {
                     PlayerLayerView(player: player)
+                        .overlay(alignment: .topLeading) {
+                            // 播放时藏起来：一边播一边拖没有意义，还挡画面
+                            if !appState.isPlaying, let overlay = appState.activeOverlay {
+                                PiPDragHandle(item: overlay,
+                                              renderSize: appState.previewRenderSize,
+                                              stageSize: CGSize(width: videoWidth, height: videoHeight))
+                                    .id(overlay.id)
+                            }
+                        }
                 } else {
                     TitleCard()
                 }
@@ -370,6 +385,135 @@ struct SubtitleOverlay: View {
             )
             .frame(maxWidth: stageWidth * 0.92)
             .allowsHitTesting(false)
+    }
+}
+
+// MARK: - 画中画拖拽层
+
+/// 预览台上直接拖画中画。
+///
+/// 拖动过程只改本地 `liveOrigin`，松手才写回项目——每次写回都会重建预览合成，
+/// 边拖边写会卡成一帧一帧的。这也和属性面板滑杆的既有做法一致。
+struct PiPDragHandle: View {
+    let item: TimelineItem
+    let renderSize: CGSize
+    let stageSize: CGSize
+
+    @EnvironmentObject var appState: AppState
+    @State private var startCenter: NormalizedPoint?
+    @State private var liveOrigin: NormalizedPoint?
+    @State private var hovering = false
+
+    private var style: PiPStyle { item.properties.pip }
+    private var isSelected: Bool { appState.selectedItemIDs.contains(item.id) }
+
+    /// 素材真实宽高比；还没读到就先用 16:9 顶着，读到会重绘
+    private var naturalSize: CGSize {
+        appState.mediaSize(for: item.assetURL) ?? CGSize(width: 16, height: 9)
+    }
+
+    /// 当前画中画在画幅里的矩形（拖动中跟手，松手前不落盘）
+    private var currentRect: CGRect {
+        guard renderSize.width > 1, renderSize.height > 1 else { return .zero }
+        var s = style
+        s.freeOrigin = liveOrigin ?? style.freeOrigin
+        return CompositionBuilder.pipRect(naturalSize: naturalSize,
+                                          renderSize: renderSize,
+                                          style: s)
+    }
+
+    var body: some View {
+        let fitted = PiPGeometry.fittedRect(contentSize: renderSize,
+                                            in: CGRect(origin: .zero, size: stageSize))
+        let viewRect = PiPGeometry.viewRect(currentRect, renderSize: renderSize, fitted: fitted)
+        let emphasized = hovering || isSelected
+
+        return ZStack {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.white.opacity(hovering ? 0.07 : 0.001))
+
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(Theme.accent.opacity(emphasized ? 0.95 : 0.45),
+                              style: StrokeStyle(lineWidth: emphasized ? 1.6 : 1.1,
+                                                 dash: emphasized ? [6, 4] : [4, 5]))
+
+            cornerHandles(visible: emphasized)
+        }
+        .frame(width: max(24, viewRect.width), height: max(16, viewRect.height))
+        .offset(x: viewRect.minX, y: viewRect.minY)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .gesture(dragGesture(fitted: fitted))
+        .simultaneousGesture(
+            TapGesture(count: 2).onEnded { resetToPreset() }
+        )
+        .help("拖动自由摆放，双击回到九宫格位置")
+        .task(id: item.assetURL) { appState.requestMediaSize(for: item.assetURL) }
+    }
+
+    private func cornerHandles(visible: Bool) -> some View {
+        GeometryReader { g in
+            let side: CGFloat = 7
+            ForEach(0..<4, id: \.self) { index in
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(Theme.accent)
+                    .frame(width: side, height: side)
+                    .position(x: index % 2 == 0 ? 0 : g.size.width,
+                              y: index < 2 ? 0 : g.size.height)
+                    .opacity(visible ? 1 : 0)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func dragGesture(fitted: CGRect) -> some Gesture {
+        DragGesture(minimumDistance: 1)
+            .onChanged { value in
+                guard fitted.width > 1, fitted.height > 1,
+                      renderSize.width > 1, renderSize.height > 1 else { return }
+
+                // 第一次回调时记下按下瞬间的中心点，后面都按「起点 + 累计位移」算，
+                // 不用每帧累加，避免浮点漂移
+                if startCenter == nil {
+                    let rect = currentRect
+                    startCenter = NormalizedPoint(x: Double(rect.midX / renderSize.width),
+                                                  y: Double(rect.midY / renderSize.height))
+                }
+                guard let center0 = startCenter else { return }
+
+                let size = currentRect.size
+                let center = NormalizedPoint(
+                    x: center0.x + Double(value.translation.width / fitted.width),
+                    y: center0.y + Double(value.translation.height / fitted.height))
+
+                var origin = PiPGeometry.origin(centeredAt: center,
+                                                size: size,
+                                                renderSize: renderSize)
+                origin = PiPGeometry.snapToEdges(origin,
+                                                 size: size,
+                                                 renderSize: renderSize,
+                                                 margin: style.margin)
+                liveOrigin = PiPGeometry.clampOrigin(origin,
+                                                     size: size,
+                                                     renderSize: renderSize,
+                                                     margin: style.margin)
+            }
+            .onEnded { _ in
+                startCenter = nil
+                guard let origin = liveOrigin else { return }
+                liveOrigin = nil
+                var copy = item
+                copy.properties.pip.freeOrigin = origin
+                appState.updateItem(copy, recordUndo: true)
+            }
+    }
+
+    private func resetToPreset() {
+        guard style.freeOrigin != nil else { return }
+        var copy = item
+        copy.properties.pip.freeOrigin = nil
+        appState.updateItem(copy, recordUndo: true)
+        appState.notify("画中画回到「\(style.position.label)」")
     }
 }
 

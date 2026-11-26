@@ -240,6 +240,19 @@ struct PropertiesPanel: View {
                 positionButton(item, .center, fullWidth: true)
             }
 
+            HStack(spacing: 5) {
+                Image(systemName: style.freeOrigin == nil ? "hand.draw" : "hand.draw.fill")
+                    .font(.system(size: 9))
+                Text(style.freeOrigin == nil
+                     ? "也能在预览台上直接拖动画中画"
+                     : "自由位置 · 点九宫格或双击画中画可复位")
+                    .font(.system(size: 10))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(style.freeOrigin == nil ? Theme.text3 : Theme.accent)
+            .padding(.top, 6)
+
             Text("画中画浮在主画面之上，自身不做转场。拖回 V1 即恢复为主画面。")
                 .font(.system(size: 10.5))
                 .foregroundStyle(Theme.text3)
@@ -251,10 +264,13 @@ struct PropertiesPanel: View {
     private func positionButton(_ item: TimelineItem,
                                 _ position: PiPPosition,
                                 fullWidth: Bool = false) -> some View {
+        // 自由位置时九宫格一个都不高亮：拖歪了还亮着「右下」会让人以为没拖成功
         let active = item.properties.pip.position == position
+            && item.properties.pip.freeOrigin == nil
         return Button {
             var copy = item
             copy.properties.pip.position = position
+            copy.properties.pip.freeOrigin = nil
             appState.updateItem(copy, recordUndo: true)
         } label: {
             HStack(spacing: 4) {

@@ -108,6 +108,11 @@ final class AppState: ObservableObject {
     @Published var previewPlayer: AVPlayer?
     @Published var previewStatus: String?
 
+    /// 画中画素材尺寸缓存（key = 文件路径）。
+    /// 预览台画拖拽框要知道素材宽高比，不然竖屏画中画会被画成横的；
+    /// 读一次就留着，拖动时不能每次都去问 AVFoundation。
+    @Published private(set) var mediaSizes: [String: CGSize] = [:]
+
     // 配置
     @Published var aiConfig = AIConfig()
 
@@ -216,6 +221,44 @@ final class AppState: ObservableObject {
     /// 当前时间点应显示的字幕
     var activeSubtitle: TimelineItem? {
         SubtitleRenderer.activeItem(at: currentTime, in: timeline)
+    }
+
+    /// 预览用的合成尺寸：跟随项目画幅比例，最长边压到 1280 以内。
+    /// 以前固定 1280×720，竖屏 / 方形项目的预览比例是错的，
+    /// 画中画的落位也会跟着错位——预览台和导出必须用同一个画幅。
+    var previewRenderSize: CGSize {
+        let target = currentProject.settings.resolution.size
+        let longest = max(target.width, target.height)
+        guard longest > 1280, longest > 0 else { return target }
+        let scale = 1280 / longest
+        return CGSize(width: (target.width * scale).rounded(),
+                      height: (target.height * scale).rounded())
+    }
+
+    /// 播放头位置正在显示的那条画中画（V2 层且在自身区间内）。
+    /// 预览台的拖拽框只画这一条，避免多条画中画叠在一起抢手势。
+    var activeOverlay: TimelineItem? {
+        timeline.first { $0.isOverlay && currentTime >= $0.startTime && currentTime < $0.endTime }
+    }
+
+    /// 查缓存的素材尺寸；没缓存就返回 nil（调用方先用 16:9 兜底）
+    func mediaSize(for url: URL?) -> CGSize? {
+        guard let url else { return nil }
+        return mediaSizes[url.path]
+    }
+
+    /// 异步读一次素材尺寸并缓存。重复调用会被缓存挡掉。
+    func requestMediaSize(for url: URL?) {
+        guard let url, mediaSizes[url.path] == nil else { return }
+        let key = url.path
+        Task { [weak self] in
+            let size = await PiPGeometry.displaySize(url: url)
+            // 读不出来就记 16:9：宁可画框比例不准，也不要每次重绘都重试
+            let resolved = size ?? CGSize(width: 16, height: 9)
+            await MainActor.run { [weak self] in
+                self?.mediaSizes[key] = resolved
+            }
+        }
     }
 
     /// 该层上指定时间范围是否空闲
@@ -1111,13 +1154,14 @@ final class AppState: ObservableObject {
 
         previewGeneration += 1
         let generation = previewGeneration
+        let renderSize = previewRenderSize
         previewStatus = "正在生成预览…"
 
         Task { [weak self] in
             guard let self else { return }
             do {
                 let build = try await CompositionBuilder.build(items: items,
-                                                               renderSize: CGSize(width: 1280, height: 720),
+                                                               renderSize: renderSize,
                                                                fps: 30)
                 await MainActor.run {
                     guard generation == self.previewGeneration else { return }

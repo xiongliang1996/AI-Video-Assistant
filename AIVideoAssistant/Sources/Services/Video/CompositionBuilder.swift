@@ -857,19 +857,33 @@ enum CompositionBuilder {
         }
 
         let origin: CGPoint
-        switch s.position {
-        case .topLeading:
-            origin = CGPoint(x: margin, y: margin)
-        case .topTrailing:
-            origin = CGPoint(x: renderSize.width - margin - width, y: margin)
-        case .bottomLeading:
-            origin = CGPoint(x: margin, y: renderSize.height - margin - height)
-        case .bottomTrailing:
-            origin = CGPoint(x: renderSize.width - margin - width,
-                             y: renderSize.height - margin - height)
-        case .center:
-            origin = CGPoint(x: (renderSize.width - width) / 2,
-                             y: (renderSize.height - height) / 2)
+        if let free = s.freeOrigin {
+            // 自由位置：直接按归一化坐标落位，再夹回「留白以内」。
+            // 夹的时候上下界可能相等（画中画正好占满可放区域），用 max 兜一下，
+            // 否则 min(max(x, lo), hi) 在 hi < lo 时会把位置甩到负值。
+            let rawX = CGFloat(free.x) * renderSize.width
+            let rawY = CGFloat(free.y) * renderSize.height
+            let loX = margin
+            let loY = margin
+            let hiX = max(loX, renderSize.width - margin - width)
+            let hiY = max(loY, renderSize.height - margin - height)
+            origin = CGPoint(x: min(max(rawX, loX), hiX),
+                             y: min(max(rawY, loY), hiY))
+        } else {
+            switch s.position {
+            case .topLeading:
+                origin = CGPoint(x: margin, y: margin)
+            case .topTrailing:
+                origin = CGPoint(x: renderSize.width - margin - width, y: margin)
+            case .bottomLeading:
+                origin = CGPoint(x: margin, y: renderSize.height - margin - height)
+            case .bottomTrailing:
+                origin = CGPoint(x: renderSize.width - margin - width,
+                                 y: renderSize.height - margin - height)
+            case .center:
+                origin = CGPoint(x: (renderSize.width - width) / 2,
+                                 y: (renderSize.height - height) / 2)
+            }
         }
         return CGRect(origin: origin, size: CGSize(width: width, height: height))
     }

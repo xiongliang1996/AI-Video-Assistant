@@ -550,6 +550,13 @@ enum PiPPosition: String, Codable, CaseIterable, Hashable {
     }
 }
 
+/// 归一化坐标（0…1，y 向下）。存成两个 Double 而不是 CGPoint，
+/// 项目文件是给人看得懂的 JSON，`{"x":0.68,"y":0.72}` 比一串数组清楚。
+struct NormalizedPoint: Codable, Hashable {
+    var x: Double
+    var y: Double
+}
+
 /// 画中画的几何：只描述「多大、放哪儿」，不涉及素材本身。
 /// 数值都用占画幅的比例表示，换导出分辨率时不用重设。
 struct PiPStyle: Codable, Hashable {
@@ -558,6 +565,10 @@ struct PiPStyle: Codable, Hashable {
     var position: PiPPosition = .bottomTrailing
     /// 贴边留白，占画幅宽度的比例
     var margin: Double = 0.03
+    /// 自由位置：画中画左上角的归一化坐标。
+    /// nil 表示按 `position` 贴边——九宫格按钮点一下就会清空它，
+    /// 所以在预览台上拖过之后，点九宫格能立刻回到整齐的贴边位。
+    var freeOrigin: NormalizedPoint?
 
     /// 允许的范围，界面滑杆和引擎都按这个夹一次
     static let widthRange: ClosedRange<Double> = 0.1...0.75
@@ -565,7 +576,7 @@ struct PiPStyle: Codable, Hashable {
 
     init() {}
 
-    enum CodingKeys: String, CodingKey { case widthRatio, position, margin }
+    enum CodingKeys: String, CodingKey { case widthRatio, position, margin, freeOrigin }
 
     /// 旧项目文件没有这几个字段，缺了就按默认值
     init(from decoder: Decoder) throws {
@@ -573,6 +584,7 @@ struct PiPStyle: Codable, Hashable {
         widthRatio = try c.decodeIfPresent(Double.self, forKey: .widthRatio) ?? 0.32
         position = try c.decodeIfPresent(PiPPosition.self, forKey: .position) ?? .bottomTrailing
         margin = try c.decodeIfPresent(Double.self, forKey: .margin) ?? 0.03
+        freeOrigin = try c.decodeIfPresent(NormalizedPoint.self, forKey: .freeOrigin)
     }
 
     /// 夹到合法区间，防止滑杆外的数值把 transform 算成 NaN 或飞出画幅
@@ -584,11 +596,17 @@ struct PiPStyle: Codable, Hashable {
                           PiPStyle.marginRange.upperBound)
         if !copy.widthRatio.isFinite { copy.widthRatio = 0.32 }
         if !copy.margin.isFinite { copy.margin = 0.03 }
+        if let f = copy.freeOrigin {
+            let x = f.x.isFinite ? min(max(f.x, 0), 1) : 0
+            let y = f.y.isFinite ? min(max(f.y, 0), 1) : 0
+            copy.freeOrigin = NormalizedPoint(x: x, y: y)
+        }
         return copy
     }
 
     var summary: String {
-        "\(Int((widthRatio * 100).rounded()))% · \(position.label)"
+        let place = freeOrigin == nil ? position.label : "自由位置"
+        return "\(Int((widthRatio * 100).rounded()))% · \(place)"
     }
 }
 
