@@ -38,10 +38,17 @@ final class ExportQueue: ObservableObject {
         }
     }
 
+    /// 导的是视频还是只有声音
+    enum Kind: String, Equatable {
+        case video
+        case audio
+    }
+
     struct Job: Identifiable, Equatable {
         let id = UUID()
         var title: String
         var outputURL: URL
+        var kind: Kind = .video
         var state: JobState = .queued
         var progress: Double = 0
         var message: String = "排队中"
@@ -53,6 +60,7 @@ final class ExportQueue: ObservableObject {
     private struct Payload {
         var items: [TimelineItem]
         var settings: ExportSettings
+        var kind: Kind
     }
 
     @Published private(set) var jobs: [Job] = []
@@ -87,9 +95,23 @@ final class ExportQueue: ObservableObject {
                  items: [TimelineItem],
                  settings: ExportSettings,
                  to outputURL: URL) -> UUID {
-        let job = Job(title: title, outputURL: outputURL)
+        let job = Job(title: title, outputURL: outputURL, kind: .video)
         jobs.append(job)
-        payloads[job.id] = Payload(items: items, settings: settings)
+        payloads[job.id] = Payload(items: items, settings: settings, kind: .video)
+        pump()
+        return job.id
+    }
+
+    /// 只导出音频（M4A）。队列照样串行，和视频导出排在一起
+    @discardableResult
+    func enqueueAudio(title: String,
+                      items: [TimelineItem],
+                      to outputURL: URL) -> UUID {
+        let job = Job(title: title, outputURL: outputURL, kind: .audio)
+        jobs.append(job)
+        payloads[job.id] = Payload(items: items,
+                                   settings: ExportSettings(),
+                                   kind: .audio)
         pump()
         return job.id
     }
@@ -149,9 +171,7 @@ final class ExportQueue: ObservableObject {
         let task = Task { [weak self] in
             guard let self else { return }
             do {
-                try await VideoExporter.shared.export(items: payload.items,
-                                                      settings: payload.settings,
-                                                      to: next.outputURL) { progress, message in
+                let report: @Sendable (Double, String) -> Void = { progress, message in
                     Task { @MainActor [weak self] in
                         guard let self else { return }
                         self.update(next.id) { job in
@@ -162,6 +182,17 @@ final class ExportQueue: ObservableObject {
                             self.onActiveJobChange?(job)
                         }
                     }
+                }
+                switch payload.kind {
+                case .video:
+                    try await VideoExporter.shared.export(items: payload.items,
+                                                          settings: payload.settings,
+                                                          to: next.outputURL,
+                                                          progress: report)
+                case .audio:
+                    try await AudioExporter.export(items: payload.items,
+                                                   to: next.outputURL,
+                                                   progress: report)
                 }
                 await self.finish(next.id, state: .done, message: "导出完成")
             } catch let error as VideoError {

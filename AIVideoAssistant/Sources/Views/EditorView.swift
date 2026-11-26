@@ -77,6 +77,16 @@ struct EditorToolbar: View {
             .buttonStyle(SoftButtonStyle())
 
             Button {
+                appState.exportAudioOnly()
+            } label: {
+                Label("仅音频", systemImage: "waveform")
+                    .font(.system(size: 12.5))
+            }
+            .buttonStyle(SoftButtonStyle())
+            .help("只导出混好的音频轨（M4A）")
+            .disabled(appState.processing != nil)
+
+            Button {
                 appState.exportVideo()
             } label: {
                 Label("导出视频", systemImage: "square.and.arrow.up")

@@ -1407,6 +1407,30 @@ final class AppState: ObservableObject {
         enqueueExport(to: url)
     }
 
+    /// 导出完成后自动打开成品（设置里的开关）
+    static let autoOpenExportKey = "export.autoOpenWhenDone"
+
+    /// 只导出音频（M4A）：播客 / 口播交付常常只要声音
+    func exportAudioOnly() {
+        guard !timeline.isEmpty else {
+            showError("时间线是空的，先放点素材进来")
+            return
+        }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.mpeg4Audio]
+        panel.nameFieldStringValue = "\(currentProject.name).m4a"
+        panel.message = "只导出混好的音轨，画面不参与渲染"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        let items = timeline
+        let name = currentProject.name
+        Task { @MainActor in
+            ExportQueue.shared.enqueueAudio(title: "\(name) · 音频", items: items, to: url)
+            let pending = ExportQueue.shared.pendingCount
+            self.notify(pending > 1 ? "已加入导出队列（前面还有 \(pending - 1) 个）" : "已开始导出音频")
+        }
+    }
+
     /// 加入导出队列（串行执行，可在导出队列面板里取消）
     func enqueueExport(to url: URL) {
         guard !timeline.isEmpty else {
@@ -1595,6 +1619,9 @@ final class AppState: ObservableObject {
             switch job.state {
             case .done:
                 self.notify("导出完成：\(job.outputURL.lastPathComponent)")
+                if UserDefaults.standard.bool(forKey: Self.autoOpenExportKey) {
+                    NSWorkspace.shared.open(job.outputURL)
+                }
             case .failed(let message):
                 self.showError(message)
             case .cancelled:

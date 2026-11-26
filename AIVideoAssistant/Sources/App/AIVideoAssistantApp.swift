@@ -48,6 +48,9 @@ struct AIVideoAssistantApp: App {
                 Button("导出视频…") { appState.exportVideo() }
                     .keyboardShortcut("e", modifiers: .command)
 
+                Button("仅导出音频…") { appState.exportAudioOnly() }
+                    .keyboardShortcut("e", modifiers: [.command, .option])
+
                 Button("导出队列…") { appState.showingExportQueue = true }
                     .keyboardShortcut("e", modifiers: [.command, .shift])
             }

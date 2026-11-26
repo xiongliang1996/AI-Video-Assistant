@@ -14,6 +14,8 @@ struct SettingsView: View {
     @State private var draft = AIConfig()
     @State private var testResult: String?
     @State private var presetSheet = false
+    /// 导出完成后自动打开成品
+    @AppStorage(AppState.autoOpenExportKey) private var autoOpenExport = false
 
     /// initialTab 只用于预览 / 截图验证
     init(initialTab: Int = 0) {
@@ -112,15 +114,21 @@ struct SettingsView: View {
 
     private var footer: some View {
         HStack(spacing: 8) {
-            Button("测试连接") { testConnection() }
-                .buttonStyle(SoftButtonStyle())
+            // 「测试连接」只对 AI 两个页签有意义；导出参数是即时生效的，
+            // 在这一页放「保存」会让人以为还要提交一次
+            if tab <= 1 {
+                Button("测试连接") { testConnection() }
+                    .buttonStyle(SoftButtonStyle())
+            }
             Spacer()
-            Button("取消") { dismiss() }
+            Button(tab <= 1 ? "取消" : "关闭") { dismiss() }
                 .buttonStyle(SoftButtonStyle())
-            Button("保存") {
-                appState.aiConfig = draft
-                AIConfigManager.shared.save(draft)
-                appState.notify("设置已保存到钥匙串")
+            Button(tab <= 1 ? "保存" : "完成") {
+                if tab <= 1 {
+                    appState.aiConfig = draft
+                    AIConfigManager.shared.save(draft)
+                    appState.notify("设置已保存到钥匙串")
+                }
                 dismiss()
             }
             .buttonStyle(PrimaryButtonStyle())
@@ -288,6 +296,23 @@ struct SettingsView: View {
             } else {
                 note("导出使用 AVFoundation 硬件编码，H.264 / ProRes 自动选择", icon: "info.circle")
             }
+
+            Divider()
+
+            Toggle(isOn: $autoOpenExport) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("导出完成后自动打开成品")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Theme.text2)
+                    Text("队列里每个任务完成就交给系统默认播放器打开")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Theme.text3)
+                }
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+
+            note("「仅导出音频」在导出按钮旁边 / 文件菜单 ⌘⌥E：只出混好的 M4A，画面不渲染", icon: "waveform")
         }
     }
 

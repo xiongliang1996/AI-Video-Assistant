@@ -44,6 +44,7 @@
 - AVFoundation 编码导出（H.264，720p–4K）；无字幕走硬件编码，有字幕走逐帧绘制
 - **导出预设**：内置横屏 1080p / 4K / 60fps、竖屏 1080 / 720 草稿、方形 1080 六套参数，点一下整套切换；也能把当前参数存成自己的预设（重名自动加序号）。画幅填充可选「适应（留黑边）」或「填满（裁切）」，竖屏交付不用再去别的软件里改
 - **导出队列**：`⌘E` 入队、串行执行，排队期间可以继续剪；`⌘⇧E` 看进度、取消（取消会清掉写了一半的文件）、在访达里定位成品
+- **仅导出音频**：`⌘⌥E` 或工具栏的「仅音频」，只出混好的 M4A——播客 / 口播交付只要声音时不用渲染画面。它和视频导出共用同一个队列，音量包络、淡入淡出、变速都照常算进去；时间线上没有声音会明确报错，不会给你一个空文件
 - **导出前体检**：点导出先扫一遍时间线，把「能导出、但成片不是你要的」问题列清楚——素材文件丢了、片段比素材长、转场不会生效、同轨重叠、字幕跑到片尾之后或显示太短、画幅和成片比例不一致、画面空隙会变黑场、画中画下面没有主画面或小到看不清。按严重程度分三级，能直接「仍然导出」
 
 ### 体验
@@ -111,6 +112,7 @@ open dist/AI视频助手.app
 | `⌘ ⇧ L` | 重连缺失素材 |
 | `⌘ E` | 导出视频（加入队列） |
 | `⌘ ⇧ E` | 导出队列 |
+| `⌘ ⌥ E` | 仅导出音频（M4A） |
 | `⌘ Z` / `⇧ ⌘ Z` | 撤销 / 重做 |
 | `⌘ A` / `⇧ ⌘ A` | 全选片段 / 取消选择 |
 | `⌘ ⌫` | 删除所选片段 |
@@ -134,6 +136,7 @@ open dist/AI视频助手.app
 └── AIVideoAssistant/
     ├── Package.swift               # SwiftPM 清单
     ├── scripts/build-app.sh        # 本地打包脚本
+    ├── scripts/make-icon.swift     # 设计稿 → .icns（抠白底 / 缩进 / 切圆角）
     ├── Support/Info.plist
     └── Sources/
         ├── App/                    # 入口 + 全局状态（含预览与自动保存）
@@ -145,7 +148,7 @@ open dist/AI视频助手.app
         │   ├── Editing/            # FadeGeometry：淡入淡出手柄的吸附 / 限位 / 落点（纯函数）
         │   ├── Text/               # SubtitleComposer：断句 + 按停顿对齐；SubtitleTiming：时间微调（纯函数）
         │   ├── ProjectStore.swift  # 项目读写
-        │   └── Video/              # CompositionBuilder / SubtitleRenderer / VideoExporter / ThumbnailStore / ExportQueue / HoverPreviewStore
+        │   └── Video/              # CompositionBuilder / SubtitleRenderer / VideoExporter / AudioExporter / ThumbnailStore / ExportQueue / HoverPreviewStore
         └── Views/                  # 设计系统 + 五个界面（含 WaveformView / SmartCutView / ClipThumbnailStrip / MediaHoverPreview / MediaDropTarget / CollectionSheet）
 ```
 
@@ -390,6 +393,17 @@ AVFoundation 没有内建的 sidechain 压缩，做不了「按另一条轨的�
 
 一个容易漏的细节：素材库和时间线是两套引用，只改一边的话，素材库里那张卡还会显示「文件丢失」，或者反过来片段好了但库里是坏的。所以 `applyRelink` 两边一起改。
 
+### 图标为什么要自己抠一遍
+
+设计稿是白底的方形图。直接把 JPG 改名成 .icns 会得到「一个带白边的方块」：macOS 的 Dock / 访达会把整张图按原样摆进图标位，白色四角特别显眼。
+
+所以构建前先过一遍 `make-icon`：
+
+- **按非白像素找包围盒**，把画布收进图标本身。阈值不能取 246，JPEG 在边缘有一两行半透明白的过渡像素，判太松会把它当内容，成品顶上就留一道白线（这个 bug 真的出过，最后靠采样像素才定位到）。
+- **再往里收 1.2%**，把源图圆角外侧的抗锯齿白边切掉。
+- **按 macOS 图标网格缩进到 80.5%** 并切圆角（半径 = 内容边长 × 0.2237）。系统图标位四周是留白的，满铺反而比别人的图标大一圈。
+- 最后 `sips` 出 10 个尺寸、`iconutil` 打包成 .icns。
+
 ### 闪避为什么可以拿字幕当参考
 
 自动闪避要的是「什么时候有人在说话」。有两条路能拿到这个信息：
@@ -462,6 +476,8 @@ AVFoundation 没有内建的 sidechain 压缩，做不了「按另一条轨的�
 - [x] 音乐自动闪避（按配音语音区间生成音量包络，可调强度 / 提前量 / 恢复 / 最短平台期）
 - [x] 时间线直接拖淡入淡出（上边缘手柄 + 衰减区可视化 + 秒数气泡，上限与渲染器对齐）
 - [x] 闪避参考来源可选字幕时间（字幕边界当语音区间，不用解码音频，标题卡不参与）
+- [x] 应用图标（从设计稿抠白底、按 macOS 图标网格缩进、切圆角，生成 .icns）
+- [x] 仅导出音频（M4A，和视频共用队列）+ 导出完成自动打开成品
 - [ ] Sora 视频生成接入（等待 API 开放）
 
 ---
