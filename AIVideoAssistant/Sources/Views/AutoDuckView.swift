@@ -11,7 +11,7 @@ struct AutoDuckView: View {
 
     let targetID: UUID
 
-    @State private var speech: [ClosedRange<Double>] = []
+    @State private var voiceSpeech: [ClosedRange<Double>] = []
     @State private var analyzing = true
     @State private var presetIndex = 1
     @State private var attack: Double = AudioDucker.Options.medium.attack
@@ -25,6 +25,28 @@ struct AutoDuckView: View {
     private var references: [TimelineItem] {
         guard let target else { return [] }
         return appState.duckReferenceClips(for: target)
+    }
+
+    private var subtitleClips: [TimelineItem] {
+        appState.spokenSubtitleClips
+    }
+
+    /// 参考来源记在 AppState 里：连着给几段音乐闪避时不用每次重选
+    private var source: AudioDucker.ReferenceSource { appState.duckReferenceSource }
+
+    private var sourceBinding: Binding<AudioDucker.ReferenceSource> {
+        Binding(get: { appState.duckReferenceSource },
+                set: { appState.duckReferenceSource = $0 })
+    }
+
+    /// 当前来源的语音区间。字幕这条路是同步算的，改「保留停顿」会立刻跟着变
+    private var speech: [ClosedRange<Double>] {
+        switch source {
+        case .voiceTrack:
+            return voiceSpeech
+        case .subtitles:
+            return appState.subtitleIntervals(options: options)
+        }
     }
 
     private var options: AudioDucker.Options {
@@ -66,11 +88,11 @@ struct AutoDuckView: View {
 
             footer
         }
-        .frame(width: 470, height: 668)
+        .frame(width: 470, height: 720)
         .background(Theme.panel)
         .task(id: targetID) {
             analyzing = true
-            speech = await appState.speechIntervals(inReference: references)
+            voiceSpeech = await appState.speechIntervals(inReference: references)
             analyzing = false
         }
     }
@@ -82,7 +104,7 @@ struct AutoDuckView: View {
             Image(systemName: "waveform.badge.mic")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(Theme.accent)
-            Text("按配音自动闪避")
+            Text("自动闪避")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Theme.text)
             Spacer()
@@ -142,58 +164,152 @@ struct AutoDuckView: View {
 
     private var referenceSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("参考的语音")
-
-            if analyzing {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("正在分析语音…")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Theme.text3)
-                }
-                .frame(height: 26)
-            } else if references.isEmpty {
-                Text("另一条音频轨上没有片段。把配音放到 A2（或 A1），音乐放另一条轨，再回来闪避。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Theme.warning)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                ForEach(references) { clip in
-                    HStack(spacing: 6) {
-                        Image(systemName: "mic")
-                            .font(.system(size: 9))
-                            .foregroundStyle(Theme.text3)
-                        Text(clip.name)
-                            .font(.system(size: 11))
-                            .foregroundStyle(Theme.text2)
-                            .lineLimit(1)
-                        Text(clip.trackLane == 1 ? "A2" : "A1")
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(Theme.text3)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(RoundedRectangle(cornerRadius: 3)
-                                .fill(Theme.text3.opacity(0.12)))
-                        Spacer(minLength: 0)
-                        Text(formatTimecode(clip.startTime))
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(Theme.text3)
-                    }
-                }
-
-                if speech.isEmpty {
-                    Text("这些片段里没检测到语音（可能整段是静音，或者本来就是音乐）。")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(Theme.warning)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    Text("检测到 \(speech.count) 段语音，共 \(String(format: "%.1f", speechDuration)) 秒")
-                        .font(.system(size: 10.5))
+            HStack(spacing: 8) {
+                sectionLabel("参考来源")
+                Spacer()
+                if !speech.isEmpty {
+                    Text("\(speech.count) 段 · \(String(format: "%.1f", speechDuration)) 秒")
+                        .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(Theme.text3)
                 }
             }
+
+            SegmentedControl(options: AudioDucker.ReferenceSource.allCases,
+                             title: { option in
+                                 switch option {
+                                 case .voiceTrack:
+                                     return "配音语音"
+                                 case .subtitles:
+                                     return subtitleClips.isEmpty ? "字幕时间" : "字幕时间 \(subtitleClips.count)"
+                                 }
+                             },
+                             selection: sourceBinding)
+                .frame(height: 26)
+
+            switch source {
+            case .voiceTrack:
+                voiceReferenceBody
+            case .subtitles:
+                subtitleReferenceBody
+            }
         }
         .padding(.vertical, 14)
+    }
+
+    @ViewBuilder
+    private var voiceReferenceBody: some View {
+        if analyzing {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("正在分析语音…")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.text3)
+            }
+            .frame(height: 26)
+        } else if references.isEmpty {
+            Text("另一条音频轨上没有片段。把配音放到 A2（或 A1），音乐放另一条轨，再回来闪避。")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.warning)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            ForEach(references) { clip in
+                HStack(spacing: 6) {
+                    Image(systemName: "mic")
+                        .font(.system(size: 9))
+                        .foregroundStyle(Theme.text3)
+                    Text(clip.name)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.text2)
+                        .lineLimit(1)
+                    Text(clip.trackLane == 1 ? "A2" : "A1")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(Theme.text3)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(RoundedRectangle(cornerRadius: 3)
+                            .fill(Theme.text3.opacity(0.12)))
+                    Spacer(minLength: 0)
+                    Text(formatTimecode(clip.startTime))
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(Theme.text3)
+                }
+            }
+
+            if voiceSpeech.isEmpty {
+                Text("这些片段里没检测到语音（可能整段是静音，或者本来就是音乐）。")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("按波形找出的语音区间。有字幕的项目可以直接切到「字幕时间」，更快也更贴。")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.text3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var subtitleReferenceBody: some View {
+        if subtitleClips.isEmpty {
+            Text("时间线上还没有字幕。先用 AI 字幕（⌘L）识别一遍，或者导入 SRT，再回来用字幕时间闪避。")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.warning)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            ForEach(Array(subtitleClips.prefix(3))) { clip in
+                HStack(spacing: 6) {
+                    Image(systemName: "text.bubble")
+                        .font(.system(size: 9))
+                        .foregroundStyle(Theme.text3)
+                    Text(subtitleText(clip))
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.text2)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    Text("\(secondsLabel(clip.startTime))–\(secondsLabel(clip.endTime))")
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .foregroundStyle(Theme.text3)
+                }
+            }
+
+            if subtitleClips.count > 3 {
+                Text("… 还有 \(subtitleClips.count - 3) 条")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.text3)
+            }
+
+            if speech.isEmpty {
+                Text("字幕时间和这段音乐没有重叠，压不到东西。")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("直接用字幕的显示区间当语音区间：不解码音频，字幕改了重新打开面板就跟着变。")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.text3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// 字幕条目通常只有一两秒，mm:ss 太糊，用带一位小数的秒
+    private func secondsLabel(_ value: Double) -> String {
+        String(format: "%.1fs", value)
+    }
+
+    private var emptyMessage: String {
+        switch source {
+        case .voiceTrack:
+            return "没有可闪避的语音"
+        case .subtitles:
+            return subtitleClips.isEmpty ? "时间线上还没有字幕" : "字幕和这段音乐没有重叠"
+        }
+    }
+
+    private func subtitleText(_ clip: TimelineItem) -> String {
+        let text = clip.properties.textContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? clip.name : text
     }
 
     private var speechDuration: Double {
@@ -245,7 +361,7 @@ struct AutoDuckView: View {
             }
 
             envelopeChart
-                .frame(height: 96)
+                .frame(height: 88)
         }
         .padding(.top, 14)
     }
@@ -341,7 +457,7 @@ struct AutoDuckView: View {
                     .font(.system(size: 10.5))
                     .foregroundStyle(Theme.text3)
             } else if envelope.isEmpty {
-                Text("没有可闪避的语音")
+                Text(emptyMessage)
                     .font(.system(size: 10.5))
                     .foregroundStyle(Theme.warning)
             }
@@ -354,7 +470,7 @@ struct AutoDuckView: View {
                 dismiss()
             }
             .buttonStyle(PrimaryButtonStyle(height: 30))
-            .disabled(analyzing || envelope.count < 2)
+            .disabled((source == .voiceTrack && analyzing) || envelope.count < 2)
         }
         .padding(.horizontal, 16)
         .frame(height: 56)

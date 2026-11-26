@@ -55,6 +55,8 @@ final class AppState: ObservableObject {
     @Published var showingAutoDuck = false
     /// 闪避的目标片段（被压音量的那条）
     @Published var autoDuckTargetID: UUID?
+    /// 闪避的参考来源。记在全局状态里，同一个项目连着做几段音乐不用每次重选
+    @Published var duckReferenceSource: AudioDucker.ReferenceSource = .voiceTrack
     /// 找不到文件的素材路径集合。用集合而不是计数，素材卡片才能标出哪一张丢了
     @Published var missingAssetPaths: Set<String> = []
     /// 提示条上的数字
@@ -1470,9 +1472,26 @@ final class AppState: ObservableObject {
         return result.sorted { $0.lowerBound < $1.lowerBound }
     }
 
+    /// 闪避可以参考的字幕条目：只认 `.subtitle`，不认 `.text`。
+    /// 文字图层可能是标题卡，那段时间说话人往往没在说，拿它压音乐没道理
+    var spokenSubtitleClips: [TimelineItem] {
+        timeline.filter { $0.type == .subtitle }.sorted { $0.startTime < $1.startTime }
+    }
+
+    /// 用字幕时间当闪避的语音区间。
+    ///
+    /// 字幕本来就卡在发音上，比静音检测更贴（尤其是配音里有呼吸声、
+    /// 键盘声的时候）；而且不用解码音频，打开面板就能算。
+    /// 合并间隔用 `effectiveHoldGap`（恢复 + 再压 + 最短平台期），
+    /// 和 `envelope` 内部的合并阈值保持一致——否则面板上写「3 段」，
+    /// 实际包络按 2 段生成，对不上
+    func subtitleIntervals(options: AudioDucker.Options) -> [ClosedRange<Double>] {
+        AudioDucker.ranges(from: spokenSubtitleClips.map { $0.startTime...$0.endTime },
+                           holdGap: options.effectiveHoldGap)
+    }
+
     /// 把算好的包络写进目标片段的音量关键帧
-    func applyDuckEnvelope(_ points: [AudioDucker.Point], to item: TimelineItem) {
-        guard points.count >= 2 else {
+    func applyDuckEnvelope(_ points: [AudioDucker.Point], to item: TimelineItem) {        guard points.count >= 2 else {
             notify("这段区间里没有语音，不用闪避")
             return
         }

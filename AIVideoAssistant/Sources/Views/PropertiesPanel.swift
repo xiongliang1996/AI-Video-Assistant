@@ -350,15 +350,15 @@ struct PropertiesPanel: View {
                 Button {
                     appState.presentAutoDuck(for: item)
                 } label: {
-                    Label("按配音自动闪避…", systemImage: "waveform.badge.mic")
+                    Label("自动闪避…", systemImage: "waveform.badge.mic")
                         .font(.system(size: 11))
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(SoftButtonStyle(height: 26, active: true))
-                .help("按另一条音频轨上的配音，给这段生成音量包络")
+                .help("按配音的语音区间或字幕时间，给这段生成音量包络")
                 .padding(.top, 8)
 
-                Text("配音响的时候把这段压下去，说完再抬回来。生成的是音量关键帧，之后还能手动改。")
+                Text("配音响的时候把这段压下去，说完再抬回来。参考可以是另一条音频轨的语音，也可以是字幕时间。生成的是音量关键帧，之后还能手动改。")
                     .font(.system(size: 10.5))
                     .foregroundStyle(Theme.text3)
                     .fixedSize(horizontal: false, vertical: true)

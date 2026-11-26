@@ -975,7 +975,7 @@ struct ClipView: View {
                 onDuplicate()
             }
             if item.type == .audio {
-                Button("按配音自动闪避…") {
+                Button("自动闪避…") {
                     onAutoDuck()
                 }
             }

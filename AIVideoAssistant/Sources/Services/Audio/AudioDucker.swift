@@ -64,6 +64,24 @@ enum AudioDucker {
         var value: Double
     }
 
+    /// 闪避的参考来源
+    enum ReferenceSource: String, CaseIterable, Identifiable {
+        /// 分析另一条音频轨的语音区间（离线 RMS / dBFS）
+        case voiceTrack
+        /// 直接用时间线上的字幕条目。字幕本来就是按发音对齐的，
+        /// 比静音检测更贴，而且不用解码音频
+        case subtitles
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .voiceTrack: return "配音语音"
+            case .subtitles: return "字幕时间"
+            }
+        }
+    }
+
     // MARK: - 单位换算
 
     static func decibels(for ratio: Double) -> Double {
@@ -101,6 +119,16 @@ enum AudioDucker {
             }
         }
         return result
+    }
+
+    /// 字幕条目 → 语音区间。
+    ///
+    /// 字幕的边界是「这句话显示到什么时候」，通常比静音检测晚一点点
+    /// （句尾拖音、字幕多留 0.2 秒给阅读），所以先剔掉零长度的，
+    /// 再按 holdGap 合并相邻条目——同一段话被拆成两行时不该抬起来。
+    static func ranges(from spans: [ClosedRange<Double>],
+                       holdGap: Double) -> [ClosedRange<Double>] {
+        merge(spans.filter { $0.upperBound - $0.lowerBound > 0.02 }, holdGap: holdGap)
     }
 
     // MARK: - 增益曲线

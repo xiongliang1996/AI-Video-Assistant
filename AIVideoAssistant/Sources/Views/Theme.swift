@@ -116,6 +116,8 @@ struct PrimaryButtonStyle: ButtonStyle {
     var height: CGFloat = 29
     var fullWidth: Bool = false
 
+    @Environment(\.isEnabled) private var isEnabled
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 12.5, weight: .medium))
@@ -125,9 +127,10 @@ struct PrimaryButtonStyle: ButtonStyle {
             .padding(.horizontal, fullWidth ? 0 : 13)
             .background(Theme.brandGradient)
             .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .shadow(color: Theme.accent.opacity(configuration.isPressed ? 0.18 : 0.3),
+            .shadow(color: Theme.accent.opacity(!isEnabled ? 0
+                                              : (configuration.isPressed ? 0.18 : 0.3)),
                     radius: configuration.isPressed ? 4 : 10, x: 0, y: configuration.isPressed ? 1 : 4)
-            .opacity(configuration.isPressed ? 0.9 : 1)
+            .opacity(!isEnabled ? 0.42 : (configuration.isPressed ? 0.9 : 1))
             .scaleEffect(configuration.isPressed ? 0.985 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
