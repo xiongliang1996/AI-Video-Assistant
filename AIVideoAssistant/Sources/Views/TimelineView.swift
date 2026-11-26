@@ -14,7 +14,6 @@ private enum DragMode {
 struct TimelineView: View {
     @EnvironmentObject var appState: AppState
 
-    @State private var zoom: CGFloat = 1.0
     @State private var dragOrigin: TimelineItem?
     @State private var dragMode: DragMode = .move
     @State private var snapTime: Double?
@@ -30,7 +29,7 @@ struct TimelineView: View {
     private let headWidth: CGFloat = 78
     private let minClipDuration: Double = 0.2
 
-    private var pps: CGFloat { basePPS * zoom }
+    private var pps: CGFloat { basePPS * appState.timelineZoom }
 
     /// 一张缩略图覆盖 1.6 秒素材：放大时间线时缩略图跟着变宽、变少，
     /// 缩小时自动变密，始终保持「一格约 1.6 秒」的阅读节奏
@@ -149,7 +148,9 @@ struct TimelineView: View {
                 Image(systemName: "minus.magnifyingglass")
                     .font(.system(size: 9.5))
                     .foregroundStyle(Theme.text3)
-                Slider(value: $zoom, in: 0.5...3.0)
+                Slider(value: Binding(get: { appState.timelineZoom },
+                                      set: { appState.timelineZoom = $0 }),
+                       in: AppState.timelineZoomRange)
                     .controlSize(.mini)
                     .tint(Theme.accent)
                     .frame(width: 74)
@@ -242,6 +243,14 @@ struct TimelineView: View {
                         },
                         onTrimEnd: { translation, ended in
                             handleDrag(item, mode: .trimEnd, translation: translation, ended: ended)
+                        },
+                        onDuplicate: {
+                            appState.select(item.id, additive: false)
+                            appState.duplicateSelection()
+                        },
+                        onDelete: {
+                            appState.select(item.id, additive: false)
+                            appState.removeSelectedItem()
                         })
             .offset(x: CGFloat(item.startTime) * pps)
             .zIndex(appState.selectedItemIDs.contains(item.id) ? 2 : 1)
@@ -665,6 +674,8 @@ struct ClipView: View {
     var onMove: (CGSize, Bool) -> Void
     var onTrimStart: (CGSize, Bool) -> Void
     var onTrimEnd: (CGSize, Bool) -> Void
+    var onDuplicate: () -> Void = {}
+    var onDelete: () -> Void = {}
 
     @State private var hovering = false
 
@@ -808,6 +819,25 @@ struct ClipView: View {
         .simultaneousGesture(
             TapGesture().onEnded { onSelect() }
         )
+        .contextMenu {
+            Button("复制一份") {
+                onDuplicate()
+            }
+            Button("删除") {
+                onDelete()
+            }
+            Divider()
+            Text(laneLabel)
+        }
+    }
+
+    /// 右键菜单末尾显示这条片段在哪条轨道上，多选后也能确认自己点的是哪条
+    private var laneLabel: String {
+        switch item.trackKind {
+        case .video: return item.isOverlay ? "V2 · 画中画" : "V1 · 主画面"
+        case .audio: return "A\(item.trackLane + 1)"
+        case .subtitle: return "S1 · 字幕"
+        }
     }
 
     private func handle(isLeading: Bool) -> some View {

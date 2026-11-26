@@ -102,6 +102,14 @@ struct SubtitleView: View {
             }
             Spacer()
             Button {
+                importSRT()
+            } label: {
+                Label("导入 SRT", systemImage: "tray.and.arrow.down")
+                    .font(.system(size: 12.5))
+            }
+            .buttonStyle(SoftButtonStyle())
+
+            Button {
                 exportSRT()
             } label: {
                 Label("导出 SRT", systemImage: "square.and.arrow.down")
@@ -1036,5 +1044,35 @@ struct SubtitleView: View {
         let content = SubtitleParser.toSRT(subtitles)
         try? content.write(to: url, atomically: true, encoding: .utf8)
         appState.notify("已导出 \(url.lastPathComponent)")
+    }
+
+    /// 导入现成的 SRT。和导出对称——字幕经常是别人给的、或者从别处迁过来的，
+    /// 让人重新识别一遍纯属浪费。
+    private func importSRT() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "srt") ?? .plainText, .plainText]
+        panel.allowsMultipleSelection = false
+        panel.title = "导入 SRT 字幕"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        // 有些老工具导出的是 UTF-16，先按 UTF-8 读，不行再退
+        let text = (try? String(contentsOf: url, encoding: .utf8))
+            ?? (try? String(contentsOf: url, encoding: .utf16))
+        guard let text else {
+            appState.notify("读不出这个文件，确认是 UTF-8 编码的 SRT")
+            return
+        }
+
+        let parsed = SubtitleParser.parseSRT(text)
+        guard !parsed.isEmpty else {
+            appState.notify("没解析出字幕，确认是标准 SRT 格式")
+            return
+        }
+
+        subtitles = parsed
+        selectedSubtitleID = nil
+        timingBaseline = nil
+        recognizeNote = "已从 \(url.lastPathComponent) 导入 \(parsed.count) 条字幕"
+        appState.notify("已导入 \(parsed.count) 条字幕")
     }
 }

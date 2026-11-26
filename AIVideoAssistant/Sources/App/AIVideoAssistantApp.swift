@@ -63,11 +63,22 @@ struct AIVideoAssistantApp: App {
                 Button("删除所选片段") { appState.removeSelectedItem() }
                     .keyboardShortcut(.delete, modifiers: [.command])
                     .disabled(appState.selectedItemIDs.isEmpty)
+                Button("复制一份") { appState.duplicateSelection() }
+                    .keyboardShortcut("d", modifiers: .command)
+                    .disabled(appState.selectedItemIDs.isEmpty)
 
                 Divider()
 
                 Button("吸附所有转场片段") { appState.snapAllTransitions() }
                     .keyboardShortcut("t", modifiers: [.command, .shift])
+            }
+            CommandMenu("显示") {
+                Button("放大时间线") { appState.zoomTimeline(by: 1.25) }
+                    .keyboardShortcut("=", modifiers: .command)
+                Button("缩小时间线") { appState.zoomTimeline(by: 0.8) }
+                    .keyboardShortcut("-", modifiers: .command)
+                Button("时间线实际大小") { appState.resetTimelineZoom() }
+                    .keyboardShortcut("0", modifiers: .command)
             }
             CommandMenu("AI") {
                 Button("AI 生视频") { appState.selectedPanel = .generate }

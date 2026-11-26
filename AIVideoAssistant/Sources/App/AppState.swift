@@ -887,6 +887,67 @@ final class AppState: ObservableObject {
         notify(count > 1 ? "已删除 \(count) 个片段" : "已删除片段")
     }
 
+    /// 把选中的片段整组复制一份，贴在整组末尾。
+    ///
+    /// 没有走剪贴板（⌘C / ⌘V）：菜单快捷键在 macOS 上优先于响应者链，
+    /// 绑了 ⌘C 之后字幕面板的文本框就复制不了字了。⌘D 一步到位，
+    /// 也正好覆盖「复制这个片段再改改」的绝大多数用法。
+    @discardableResult
+    func duplicateSelection() -> Int {
+        let picked = selectedItems.sorted { $0.startTime < $1.startTime }
+        guard !picked.isEmpty else { return 0 }
+
+        let base = picked[0].startTime
+        var anchor = picked.map(\.endTime).max() ?? base
+
+        // 组末尾被占用就整组往右推：把 anchor 推到「冲突片段结束时间 - 该片段偏移」，
+        // 迭代几轮就能把所有冲突推干净（通常一轮就够）
+        for _ in 0..<6 {
+            var next = anchor
+            for item in picked {
+                let offset = item.startTime - base
+                let start = anchor + offset
+                let end = start + item.duration
+                for other in clips(on: item.trackKind, lane: item.trackLane)
+                where start < other.endTime - 0.001 && end > other.startTime + 0.001 {
+                    next = max(next, other.endTime - offset)
+                }
+            }
+            if next <= anchor + 0.0001 { break }
+            anchor = next
+        }
+
+        beginEdit()
+        var fresh: [TimelineItem] = []
+        fresh.reserveCapacity(picked.count)
+        for item in picked {
+            var copy = item
+            copy.id = UUID()                     // 必须换 id，否则选中/删除会串
+            copy.startTime = anchor + (item.startTime - base)
+            fresh.append(copy)
+        }
+        timeline.append(contentsOf: fresh)
+        selectedItemIDs = Set(fresh.map(\.id))
+        notify(fresh.count > 1 ? "已复制 \(fresh.count) 个片段" : "已复制片段")
+        return fresh.count
+    }
+
+    // MARK: - 时间线缩放
+
+    /// 时间线缩放倍率。放在 AppState 而不是视图里，菜单快捷键才够得着。
+    @Published var timelineZoom: CGFloat = 1.0
+
+    static let timelineZoomRange: ClosedRange<CGFloat> = 0.5...3.0
+
+    func zoomTimeline(by factor: CGFloat) {
+        timelineZoom = min(max(timelineZoom * factor, Self.timelineZoomRange.lowerBound),
+                           Self.timelineZoomRange.upperBound)
+    }
+
+    func resetTimelineZoom() {
+        timelineZoom = 1.0
+    }
+
     /// recordUndo=true 时把这次修改纳入撤销栈（滑杆连续拖动会在 1 秒内合并）
     func updateItem(_ item: TimelineItem, recordUndo: Bool = false) {
         guard let index = timeline.firstIndex(where: { $0.id == item.id }) else { return }
