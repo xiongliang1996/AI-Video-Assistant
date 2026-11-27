@@ -1406,6 +1406,12 @@ enum CompositionBuilder {
             layer.borderColor = Self.cgColor(hex: style.borderColorHex,
                                              alpha: style.borderOpacity)
         }
+        if style.hasShadow {
+            layer.shadowRatio = style.shadowRadius
+            layer.shadowOffsetRatio = style.shadowOffset
+            layer.shadowOpacity = style.shadowOpacity
+            layer.shadowColor = Self.cgColor(hex: style.shadowColorHex, alpha: 1)
+        }
         return layer
     }
 

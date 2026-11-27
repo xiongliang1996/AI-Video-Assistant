@@ -40,6 +40,16 @@ struct RenderLayer {
     var borderColor: CGColor?
     /// 调色。中性值 = 原样
     var grade: ColorGrade = ColorGrade()
+    /// 投影模糊半径占**源画面短边**的比例（0 = 不投影）。
+    /// 和圆角/描边一样按比例存：构建合成时拿不到源画面尺寸，
+    /// 而且按比例存才能让投影跟着缩放关键帧一起放大。
+    var shadowRatio: Double = 0
+    /// 投影偏移占源画面短边的比例，**视频方向**（正数 = 向下）
+    var shadowOffsetRatio: Double = 0
+    /// 投影不透明度
+    var shadowOpacity: Double = 0
+    /// 投影颜色
+    var shadowColor: CGColor?
 
     /// 在给定时刻的取值：两端夹住、中间线性插值。
     /// 曲线折点本身就是线性的（关键帧的缓动在采样阶段已经细分过），
@@ -189,6 +199,22 @@ final class DecorationCompositor: NSObject, AVVideoCompositing {
                                        borderColor: layer.borderColor)
             }
 
+            // 投影必须垫在**裁完圆角之后**：`decorate` 里的 CISourceInCompositing
+            // 会把 extent 收回到画面矩形，先垫阴影会被那一步直接裁掉
+            let shadowBlur = layer.shadowRatio * short
+            if shadowBlur > 0.5, layer.shadowOpacity > 0.005,
+               let shadowColor = layer.shadowColor {
+                // 「向下」在源空间是负 y：源画面是 CoreImage 坐标，y 向上
+                let offset = CGPoint(x: 0, y: -layer.shadowOffsetRatio * short)
+                let shadow = Self.shadow(rect: sourceRect,
+                                         radius: radius,
+                                         blur: shadowBlur,
+                                         offset: offset,
+                                         color: shadowColor,
+                                         opacity: layer.shadowOpacity)
+                source = source.composited(over: shadow)
+            }
+
             // 翻转 y 再套变换：视频坐标（y 向下）→ CoreImage 坐标（y 向上）
             let flipSource = CGAffineTransform(a: 1, b: 0, c: 0, d: -1,
                                                tx: 0, ty: sourceRect.height)
@@ -297,6 +323,50 @@ final class DecorationCompositor: NSObject, AVVideoCompositing {
             kCIInputBackgroundImageKey: ring
         ])
         return stroke.composited(over: result)
+    }
+
+    // MARK: - 投影
+
+    /// 圆角形状的投影：拿和圆角裁切同一个遮罩，模糊 → 偏移 → 染色。
+    ///
+    /// 不用 `CIShadow` 之类的现成滤镜，因为它的形状只能取输入图的 alpha——
+    /// 而这里的输入是视频帧，alpha 永远是满的，投影会变成整块矩形。
+    ///
+    /// 返回的图 extent 已经向外扩过（模糊会溢出边界），调用方直接
+    /// `composited(over:)` 垫在画面下面即可。
+    static func shadow(rect: CGRect,
+                       radius: CGFloat,
+                       blur: CGFloat,
+                       offset: CGPoint,
+                       color: CGColor,
+                       opacity: Double) -> CIImage {
+        let safeBlur = max(0, blur)
+        // 高斯大约 3σ 之外就衰减没了，留一点余量免得阴影被硬边切掉
+        let pad = safeBlur * 2.5 + max(abs(offset.x), abs(offset.y)) + 2
+        let expanded = rect.insetBy(dx: -pad, dy: -pad)
+
+        var mask = roundedMask(rect: rect,
+                               radius: min(max(radius, 0), min(rect.width, rect.height) / 2))
+        if abs(offset.x) > 0.01 || abs(offset.y) > 0.01 {
+            mask = mask.transformed(by: CGAffineTransform(translationX: offset.x,
+                                                          y: offset.y))
+        }
+        if safeBlur > 0.5 {
+            mask = mask.applyingFilter("CIGaussianBlur", parameters: [
+                kCIInputRadiusKey: safeBlur
+            ])
+        }
+        // 模糊后的 extent 是无限的，必须裁回扩展矩形，否则后面整条管线都在无限画布上跑
+        mask = mask.cropped(to: expanded)
+
+        let solid = CIImage(color: CIColor(cgColor: color)).cropped(to: expanded)
+        var result = solid.applyingFilter("CISourceInCompositing", parameters: [
+            kCIInputBackgroundImageKey: mask
+        ])
+        if opacity < 0.999 {
+            result = applyOpacity(result, opacity)
+        }
+        return result
     }
 
     /// 用圆角矩形当 alpha 遮罩裁图

@@ -266,7 +266,7 @@ struct PropertiesPanel: View {
         }
     }
 
-    /// 圆角 / 描边。设了任意一项就会让这条项目改走自绘合成器，
+    /// 圆角 / 描边 / 投影。设了任意一项就会让这条项目改走自绘合成器，
     /// 所以文案里写一句「会多花点导出时间」，省得用户以为是卡住了。
     private func pipAppearance(_ item: TimelineItem) -> some View {
         let style = item.properties.pip
@@ -297,32 +297,11 @@ struct PropertiesPanel: View {
                           ? "直角"
                           : "\(Int((style.cornerRadius * 100).rounded()))%")
 
-            HStack(spacing: 4) {
-                ForEach(presets, id: \.0) { label, value in
-                    let active = abs(style.cornerRadius - value) < 0.005
-                    Button {
-                        apply { $0.cornerRadius = value }
-                    } label: {
-                        Text(label)
-                            .font(.system(size: 10.5))
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 22)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .fill(active ? Theme.accent.opacity(0.16) : Theme.panel)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                            .stroke(active ? Theme.accent.opacity(0.55) : Theme.line,
-                                                    lineWidth: 1)
-                                    )
-                            )
-                            .foregroundStyle(active ? Theme.accent : Theme.text2)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
+            presetGrid(presets,
+                       selected: style.cornerRadius,
+                       columns: presets.count) { value in
+                apply { $0.cornerRadius = value }
             }
-            .padding(.top, 5)
 
             SliderRow(label: "描边",
                       value: Binding(
@@ -364,12 +343,89 @@ struct PropertiesPanel: View {
             }
             .padding(.top, 7)
 
-            Text("圆角和描边会在导出时逐帧合成，比纯拼接略慢一点。")
+            SliderRow(label: "投影",
+                      value: Binding(
+                        get: { item.properties.pip.shadowRadius },
+                        set: { newValue in apply { $0.shadowRadius = newValue } }
+                      ),
+                      range: PiPStyle.shadowRange,
+                      display: style.shadowRadius < 0.0005
+                          ? "关"
+                          : "\(Int((style.shadowRadius * 100).rounded()))%")
+
+            presetGrid(PiPStyle.shadowPresets.map { ($0.label, $0.radius) },
+                       selected: style.shadowRadius,
+                       columns: PiPStyle.shadowPresets.count) { radius in
+                let preset = PiPStyle.shadowPresets.first { abs($0.radius - radius) < 0.0001 }
+                apply {
+                    $0.shadowRadius = radius
+                    if radius > 0.0005, let preset { $0.shadowOffset = preset.offset }
+                }
+            }
+
+            // 深浅只在开着投影时才露面：关着的时候调它没有任何反馈，
+            // 只会让面板看起来比实际能用到的长
+            if style.hasShadow {
+                SliderRow(label: "投影深浅",
+                          value: Binding(
+                            get: { item.properties.pip.shadowOpacity },
+                            set: { newValue in apply { $0.shadowOpacity = newValue } }
+                          ),
+                          range: PiPStyle.shadowOpacityRange,
+                          display: "\(Int((style.shadowOpacity * 100).rounded()))%")
+                    .padding(.top, 6)
+            }
+
+            Text("圆角、描边和投影会在导出时逐帧合成，比纯拼接略慢一点。")
                 .font(.system(size: 10))
                 .foregroundStyle(Theme.text3)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 6)
         }
+    }
+
+    /// 预设按钮网格。
+    ///
+    /// 不用 HStack 均分：`frame(maxWidth: .infinity)` 的按钮在 3 列时会被算得
+    /// 比可用宽度略宽，最右一个的右圆角正好被容器裁掉（4 列时又刚好放得下）。
+    /// 网格的列宽是容器算出来的，列数怎么变都不会溢出。
+    private func presetGrid(_ options: [(String, Double)],
+                            selected: Double,
+                            columns: Int,
+                            action: @escaping (Double) -> Void) -> some View {
+        // GridItem 的 spacing 是「这一列与下一列之间」，最后一列也带上就会
+        // 让整行比容器宽一个 spacing，最右那个按钮的右圆角正好被裁掉
+        let count = max(columns, 1)
+        let gridColumns = (0..<count).map { index in
+            GridItem(.flexible(minimum: 0), spacing: index == count - 1 ? 0 : 4)
+        }
+        return LazyVGrid(columns: gridColumns, spacing: 4) {
+            ForEach(options, id: \.0) { label, value in
+                let active = abs(selected - value) < 0.005
+                Button {
+                    action(value)
+                } label: {
+                    Text(label)
+                        .font(.system(size: 10.5))
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 22)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(active ? Theme.accent.opacity(0.16) : Theme.panel)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .stroke(active ? Theme.accent.opacity(0.55) : Theme.line,
+                                                lineWidth: 1)
+                                )
+                        )
+                        .foregroundStyle(active ? Theme.accent : Theme.text2)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.top, 5)
     }
 
     private func positionButton(_ item: TimelineItem,

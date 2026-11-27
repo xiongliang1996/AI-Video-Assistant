@@ -609,11 +609,42 @@ struct PiPStyle: Codable, Hashable {
     /// 描边不透明度
     var borderOpacity: Double = 0.85
 
+    // MARK: 投影
+    //
+    // 同样按短边比例存。投影是「圆角形状的影子」——不是给整个矩形描一圈黑，
+    // 所以半径和圆角共用同一个形状遮罩，改圆角时影子跟着变。
+
+    /// 投影模糊半径占短边的比例。0 = 不投影
+    var shadowRadius: Double = 0
+    /// 投影不透明度。0 = 看不见
+    var shadowOpacity: Double = 0.5
+    /// 投影向下偏移占短边的比例
+    var shadowOffset: Double = 0.045
+    /// 投影颜色（0xRRGGBB）。界面不暴露，固定黑，留着给以后扩展
+    var shadowColorHex: Int = 0x000000
+
     /// 允许的范围，界面滑杆和引擎都按这个夹一次
     static let widthRange: ClosedRange<Double> = 0.1...0.75
     static let marginRange: ClosedRange<Double> = 0...0.12
     static let cornerRange: ClosedRange<Double> = 0...0.5
     static let borderRange: ClosedRange<Double> = 0...0.08
+    static let shadowRange: ClosedRange<Double> = 0...0.2
+    static let shadowOpacityRange: ClosedRange<Double> = 0...0.9
+    static let shadowOffsetRange: ClosedRange<Double> = 0...0.12
+
+    /// 投影三档预设：模糊半径 + 偏移，深浅走默认 0.5
+    struct ShadowPreset: Identifiable, Hashable {
+        let label: String
+        let radius: Double
+        let offset: Double
+        var id: String { label }
+    }
+
+    static let shadowPresets: [ShadowPreset] = [
+        ShadowPreset(label: "关", radius: 0, offset: 0.045),
+        ShadowPreset(label: "轻", radius: 0.06, offset: 0.05),
+        ShadowPreset(label: "悬浮", radius: 0.14, offset: 0.07)
+    ]
 
     /// 描边色板：白 / 黑 / 品牌紫 / 暖黄
     static let borderPalette: [Int] = [0xFFFFFF, 0x000000, 0x7C6BFF, 0xFFD166]
@@ -623,6 +654,7 @@ struct PiPStyle: Codable, Hashable {
     enum CodingKeys: String, CodingKey {
         case widthRatio, position, margin, freeOrigin
         case cornerRadius, borderWidth, borderColorHex, borderOpacity
+        case shadowRadius, shadowOpacity, shadowOffset, shadowColorHex
     }
 
     /// 旧项目文件没有这几个字段，缺了就按默认值
@@ -636,6 +668,10 @@ struct PiPStyle: Codable, Hashable {
         borderWidth = try c.decodeIfPresent(Double.self, forKey: .borderWidth) ?? 0
         borderColorHex = try c.decodeIfPresent(Int.self, forKey: .borderColorHex) ?? 0xFFFFFF
         borderOpacity = try c.decodeIfPresent(Double.self, forKey: .borderOpacity) ?? 0.85
+        shadowRadius = try c.decodeIfPresent(Double.self, forKey: .shadowRadius) ?? 0
+        shadowOpacity = try c.decodeIfPresent(Double.self, forKey: .shadowOpacity) ?? 0.5
+        shadowOffset = try c.decodeIfPresent(Double.self, forKey: .shadowOffset) ?? 0.045
+        shadowColorHex = try c.decodeIfPresent(Int.self, forKey: .shadowColorHex) ?? 0x000000
     }
 
     /// 夹到合法区间，防止滑杆外的数值把 transform 算成 NaN 或飞出画幅
@@ -650,12 +686,22 @@ struct PiPStyle: Codable, Hashable {
         if !copy.cornerRadius.isFinite { copy.cornerRadius = 0 }
         if !copy.borderWidth.isFinite { copy.borderWidth = 0 }
         if !copy.borderOpacity.isFinite { copy.borderOpacity = 0.85 }
+        if !copy.shadowRadius.isFinite { copy.shadowRadius = 0 }
+        if !copy.shadowOpacity.isFinite { copy.shadowOpacity = 0.5 }
+        if !copy.shadowOffset.isFinite { copy.shadowOffset = 0.045 }
         copy.cornerRadius = min(max(copy.cornerRadius, PiPStyle.cornerRange.lowerBound),
                                 PiPStyle.cornerRange.upperBound)
         copy.borderWidth = min(max(copy.borderWidth, PiPStyle.borderRange.lowerBound),
                                PiPStyle.borderRange.upperBound)
         copy.borderOpacity = min(max(copy.borderOpacity, 0), 1)
         copy.borderColorHex &= 0xFFFFFF
+        copy.shadowRadius = min(max(copy.shadowRadius, PiPStyle.shadowRange.lowerBound),
+                                PiPStyle.shadowRange.upperBound)
+        copy.shadowOpacity = min(max(copy.shadowOpacity, PiPStyle.shadowOpacityRange.lowerBound),
+                                 PiPStyle.shadowOpacityRange.upperBound)
+        copy.shadowOffset = min(max(copy.shadowOffset, PiPStyle.shadowOffsetRange.lowerBound),
+                                PiPStyle.shadowOffsetRange.upperBound)
+        copy.shadowColorHex &= 0xFFFFFF
         if let f = copy.freeOrigin {
             let x = f.x.isFinite ? min(max(f.x, 0), 1) : 0
             let y = f.y.isFinite ? min(max(f.y, 0), 1) : 0
@@ -665,10 +711,17 @@ struct PiPStyle: Codable, Hashable {
     }
 
     /// 有没有需要走自绘合成器的装饰。
-    /// 全直角、无描边时继续用系统合成器——那条路验证过 400+ 条断言，
-    /// 没必要为了「没设置圆角」的项目把它换掉。
+    /// 全直角、无描边、无投影时继续用系统合成器——那条路验证过 400+ 条断言，
+    /// 没必要为了「没设置装饰」的项目把它换掉。
     var hasDecoration: Bool {
-        cornerRadius > 0.0005 || (borderWidth > 0.0005 && borderOpacity > 0.005)
+        cornerRadius > 0.0005
+            || (borderWidth > 0.0005 && borderOpacity > 0.005)
+            || hasShadow
+    }
+
+    /// 投影是不是真的看得见
+    var hasShadow: Bool {
+        shadowRadius > 0.0005 && shadowOpacity > 0.005
     }
 
     /// 圆角半径换算成像素：按短边算，超短边一半就按一半（正圆）
@@ -687,11 +740,31 @@ struct PiPStyle: Codable, Hashable {
         return raw < 0.5 ? 0 : max(raw, 1)
     }
 
+    /// 投影模糊半径换算成像素
+    func shadowRadiusPixels(in rect: CGRect) -> CGFloat {
+        let short = min(rect.width, rect.height)
+        guard short > 0.5, hasShadow else { return 0 }
+        // 太小的模糊在编码里看不出来，还给合成器省一次高斯
+        let raw = CGFloat(shadowRadius) * short
+        return raw < 0.75 ? 0 : raw
+    }
+
+    /// 投影偏移换算成像素。返回值按**视频坐标**（y 向下为正），
+    /// 合成器里再翻成 CoreImage 的 y 向上。
+    func shadowOffsetPixels(in rect: CGRect) -> CGFloat {
+        let short = min(rect.width, rect.height)
+        guard short > 0.5, hasShadow else { return 0 }
+        return CGFloat(shadowOffset) * short
+    }
+
     var summary: String {
         let place = freeOrigin == nil ? position.label : "自由位置"
         var text = "\(Int((widthRatio * 100).rounded()))% · \(place)"
         if cornerRadius > 0.005 {
             text += " · 圆角 \(Int((cornerRadius * 100).rounded()))%"
+        }
+        if hasShadow {
+            text += " · 投影"
         }
         return text
     }
