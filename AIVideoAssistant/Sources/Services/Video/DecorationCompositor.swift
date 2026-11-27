@@ -38,8 +38,11 @@ struct RenderLayer {
     var borderRatio: Double = 0
     /// 描边颜色，nil = 不描边
     var borderColor: CGColor?
-    /// 调色。中性值 = 原样
+    /// 调色。中性值 = 原样。有关键帧时这里是「没采到点时」的兜底
     var grade: ColorGrade = ColorGrade()
+    /// 调色关键帧采样点（**合成时间轴绝对时间**，已按缓动细分）。
+    /// nil 或空 = 用静态 `grade`——绝大多数片段走这条路，不做任何插值
+    var gradeSamples: [(time: Double, grade: ColorGrade)]? = nil
     /// 投影模糊半径占**源画面短边**的比例（0 = 不投影）。
     /// 和圆角/描边一样按比例存：构建合成时拿不到源画面尺寸，
     /// 而且按比例存才能让投影跟着缩放关键帧一起放大。
@@ -50,6 +53,25 @@ struct RenderLayer {
     var shadowOpacity: Double = 0
     /// 投影颜色
     var shadowColor: CGColor?
+
+    /// 这一时刻该用哪个调色。没有采样点就是静态值；
+    /// 有就两端夹住、中间按分量线性插值（缓动已经在采样时细分过）
+    func gradeSample(at time: Double) -> ColorGrade {
+        guard let list = gradeSamples, let first = list.first, let last = list.last else {
+            return grade
+        }
+        if list.count == 1 || time <= first.time { return first.grade }
+        if time >= last.time { return last.grade }
+        for index in 1..<list.count {
+            let a = list[index - 1]
+            let b = list[index]
+            guard time <= b.time else { continue }
+            let span = b.time - a.time
+            guard span > 0.000_001 else { return b.grade }
+            return ColorGrade.lerp(a.grade, b.grade, (time - a.time) / span)
+        }
+        return last.grade
+    }
 
     /// 在给定时刻的取值：两端夹住、中间线性插值。
     /// 曲线折点本身就是线性的（关键帧的缓动在采样阶段已经细分过），
@@ -184,8 +206,9 @@ final class DecorationCompositor: NSObject, AVVideoCompositing {
             guard sourceRect.width > 1, sourceRect.height > 1 else { continue }
 
             // 先调色再裁圆角：描边是用户挑的颜色，不该被调色带偏
-            if !layer.grade.isNeutral {
-                source = Self.applyGrade(source, layer.grade)
+            let grade = layer.gradeSample(at: time)
+            if !grade.isNeutral {
+                source = Self.applyGrade(source, grade)
             }
 
             let short = min(sourceRect.width, sourceRect.height)

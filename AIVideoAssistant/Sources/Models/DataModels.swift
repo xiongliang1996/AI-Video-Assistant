@@ -507,14 +507,31 @@ struct Keyframe: Codable, Hashable, Identifiable {
 /// 支持关键帧动画的属性
 enum AnimatableProperty: String, Codable, CaseIterable, Identifiable {
     case scale, opacity, volume
+    /// 调色的四个分量。关键帧值就是滑杆值，范围跟 `ColorGrade` 一致
+    case exposure, contrast, saturation, temperature
 
     var id: String { rawValue }
+
+    /// 调色那四个分量，顺序和面板上的滑杆一致
+    static let colorGradeProperties: [AnimatableProperty] = [.exposure, .contrast, .saturation, .temperature]
+
+    /// 是不是调色那一组（界面上要和缩放/不透明度/音量分成两行）
+    var isColorGrade: Bool {
+        switch self {
+        case .exposure, .contrast, .saturation, .temperature: return true
+        case .scale, .opacity, .volume: return false
+        }
+    }
 
     var label: String {
         switch self {
         case .scale: return "缩放"
         case .opacity: return "不透明度"
         case .volume: return "音量"
+        case .exposure: return "曝光"
+        case .contrast: return "对比度"
+        case .saturation: return "饱和度"
+        case .temperature: return "色温"
         }
     }
 
@@ -523,6 +540,9 @@ enum AnimatableProperty: String, Codable, CaseIterable, Identifiable {
         case .scale: return "×"
         case .opacity: return ""
         case .volume: return "×"
+        case .exposure: return "EV"
+        case .contrast, .saturation: return ""
+        case .temperature: return ""
         }
     }
 
@@ -531,6 +551,10 @@ enum AnimatableProperty: String, Codable, CaseIterable, Identifiable {
         case .scale: return 0.2...3.0
         case .opacity: return 0...1
         case .volume: return 0...2
+        case .exposure: return ColorGrade.exposureRange
+        case .contrast: return ColorGrade.contrastRange
+        case .saturation: return ColorGrade.saturationRange
+        case .temperature: return ColorGrade.temperatureRange
         }
     }
 
@@ -540,6 +564,10 @@ enum AnimatableProperty: String, Codable, CaseIterable, Identifiable {
         case .scale: return p.scale
         case .opacity: return p.opacity
         case .volume: return p.volume
+        case .exposure: return p.grade.exposure
+        case .contrast: return p.grade.contrast
+        case .saturation: return p.grade.saturation
+        case .temperature: return p.grade.temperature
         }
     }
 }
@@ -794,6 +822,27 @@ struct ColorGrade: Codable, Hashable {
 
     init() {}
 
+    init(exposure: Double = 0,
+         contrast: Double = 1,
+         saturation: Double = 1,
+         temperature: Double = 0) {
+        self.exposure = exposure
+        self.contrast = contrast
+        self.saturation = saturation
+        self.temperature = temperature
+    }
+
+    /// 两个调色之间按分量线性插值。关键帧的缓动在采样阶段已经细分过，
+    /// 所以这里线性插值就够了——和 `RenderLayer.sample` 的做法一致
+    static func lerp(_ a: ColorGrade, _ b: ColorGrade, _ t: Double) -> ColorGrade {
+        let r = min(max(t, 0), 1)
+        func mix(_ x: Double, _ y: Double) -> Double { x + (y - x) * r }
+        return ColorGrade(exposure: mix(a.exposure, b.exposure),
+                          contrast: mix(a.contrast, b.contrast),
+                          saturation: mix(a.saturation, b.saturation),
+                          temperature: mix(a.temperature, b.temperature))
+    }
+
     enum CodingKeys: String, CodingKey {
         case exposure, contrast, saturation, temperature
     }
@@ -933,9 +982,24 @@ struct ItemProperties: Codable, Hashable {
     /// 有没有调色。中性值不触发自绘合成器——老项目的成片逐像素不变
     var hasColorGrade: Bool { !grade.isNeutral }
 
-    /// 有没有任何需要自绘合成器的东西（圆角 / 描边 / 调色）
+    /// 调色有没有打关键帧（四个分量任意一个有）
+    var hasColorGradeKeyframes: Bool {
+        AnimatableProperty.colorGradeProperties.contains { !keyframes(for: $0).isEmpty }
+    }
+
+    /// 某一时刻的调色。有关键帧就按关键帧算（相对片段起点的 local time），
+    /// 没有就用静态值。返回值已夹到合法区间，合成器可以直接用
+    func resolvedGrade(at time: Double) -> ColorGrade {
+        guard hasColorGradeKeyframes else { return grade.sanitized }
+        return ColorGrade(exposure: animatedValue(.exposure, at: time),
+                          contrast: animatedValue(.contrast, at: time),
+                          saturation: animatedValue(.saturation, at: time),
+                          temperature: animatedValue(.temperature, at: time)).sanitized
+    }
+
+    /// 有没有任何需要自绘合成器的东西（圆角 / 描边 / 投影 / 调色）
     var needsCustomCompositor: Bool {
-        grade.isNeutral == false || pip.hasDecoration
+        hasColorGrade || hasColorGradeKeyframes || pip.hasDecoration
     }
 
     /// 采样：没有关键帧时返回静态值；有则按时间线性插值（两端保持端点值）

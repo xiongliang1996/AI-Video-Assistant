@@ -466,47 +466,52 @@ struct PropertiesPanel: View {
     /// 调色。只有画面片段才有意义——字幕 / 文字是烧录上去的，
     /// 不经过视频合成，给它们调色只会让人以为调了没用。
     private func grade(_ item: TimelineItem) -> some View {
-        let style = item.properties.grade
+        let keyed = item.properties.hasColorGradeKeyframes
+        let local = max(0, min(item.duration, appState.currentTime - item.startTime))
+        // 有关键帧时，滑杆显示的是「播放头这一时刻」的值，不是静态值——
+        // 否则会出现「画面明明在变、滑杆却停在原处」的错觉
+        let style = keyed ? item.properties.resolvedGrade(at: local) : item.properties.grade
 
-        func apply(_ mutate: (inout ColorGrade) -> Void) {
+        func reset() {
             var copy = item
-            mutate(&copy.properties.grade)
-            copy.properties.grade = copy.properties.grade.sanitized
+            copy.properties.grade = ColorGrade()
+            for property in AnimatableProperty.colorGradeProperties {
+                copy.properties.setKeyframes([], for: property)
+            }
             appState.updateItem(copy, recordUndo: true)
         }
 
         return VStack(alignment: .leading, spacing: 0) {
-            groupHeader("camera.filters", "调色")
+            HStack(spacing: 6) {
+                groupHeader("camera.filters", "调色")
+                Spacer(minLength: 0)
+                if keyed {
+                    Text("动画中")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(Theme.accent)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1.5)
+                        .background(Capsule().fill(Theme.accentSoft))
+                }
+            }
 
             SliderRow(label: "曝光",
-                      value: Binding(
-                        get: { item.properties.grade.exposure },
-                        set: { newValue in apply { $0.exposure = newValue } }
-                      ),
+                      value: gradeBinding(item, \.exposure, .exposure),
                       range: ColorGrade.exposureRange,
                       display: String(format: "%+.1f EV", style.exposure))
 
             SliderRow(label: "对比度",
-                      value: Binding(
-                        get: { item.properties.grade.contrast },
-                        set: { newValue in apply { $0.contrast = newValue } }
-                      ),
+                      value: gradeBinding(item, \.contrast, .contrast),
                       range: ColorGrade.contrastRange,
                       display: "\(Int((style.contrast * 100).rounded()))%")
 
             SliderRow(label: "饱和度",
-                      value: Binding(
-                        get: { item.properties.grade.saturation },
-                        set: { newValue in apply { $0.saturation = newValue } }
-                      ),
+                      value: gradeBinding(item, \.saturation, .saturation),
                       range: ColorGrade.saturationRange,
                       display: "\(Int((style.saturation * 100).rounded()))%")
 
             SliderRow(label: "色温",
-                      value: Binding(
-                        get: { item.properties.grade.temperature },
-                        set: { newValue in apply { $0.temperature = newValue } }
-                      ),
+                      value: gradeBinding(item, \.temperature, .temperature),
                       range: ColorGrade.temperatureRange,
                       display: abs(style.temperature) < 0.02
                           ? "原样"
@@ -514,7 +519,7 @@ struct PropertiesPanel: View {
 
             HStack(spacing: 6) {
                 Button {
-                    apply { $0 = ColorGrade() }
+                    reset()
                 } label: {
                     Text("还原")
                         .font(.system(size: 10.5))
@@ -528,11 +533,11 @@ struct PropertiesPanel: View {
                                         .stroke(Theme.line, lineWidth: 1)
                                 )
                         )
-                        .foregroundStyle(style.isNeutral ? Theme.text3 : Theme.text2)
+                        .foregroundStyle(style.isNeutral && !keyed ? Theme.text3 : Theme.text2)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .disabled(style.isNeutral)
+                .disabled(style.isNeutral && !keyed)
 
                 Text(style.summary)
                     .font(.system(size: 10))
@@ -542,8 +547,20 @@ struct PropertiesPanel: View {
             }
             .padding(.top, 6)
 
-            if !style.isNeutral {
+            if keyed {
+                Text("这段调色有关键帧：拖滑杆会写进播放头所在的关键帧（没有就插一个）。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.accent)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 5)
+            } else if !style.isNeutral {
                 Text("调色会让这条项目改走逐帧合成，导出比纯拼接略慢。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.text3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 5)
+            } else {
+                Text("想让颜色随时间变，去下面的「关键帧」里选曝光 / 饱和度。")
                     .font(.system(size: 10))
                     .foregroundStyle(Theme.text3)
                     .fixedSize(horizontal: false, vertical: true)
@@ -551,6 +568,41 @@ struct PropertiesPanel: View {
             }
         }
     }
+
+    /// 调色滑杆的绑定。
+    ///
+    /// 有关键帧时**写的是播放头那一时刻的关键帧**，不是静态值——
+    /// 静态值在有调色关键帧时根本不参与渲染，改它等于石沉大海。
+    private func gradeBinding(_ item: TimelineItem,
+                              _ keyPath: WritableKeyPath<ColorGrade, Double>,
+                              _ property: AnimatableProperty) -> Binding<Double> {
+        Binding(
+            get: {
+                if item.properties.hasColorGradeKeyframes {
+                    let local = max(0, min(item.duration, appState.currentTime - item.startTime))
+                    return item.properties.resolvedGrade(at: local)[keyPath: keyPath]
+                }
+                return item.properties.grade[keyPath: keyPath]
+            },
+            set: { newValue in
+                var copy = item
+                copy.properties.grade[keyPath: keyPath] = newValue
+                if copy.properties.hasColorGradeKeyframes {
+                    let local = max(0, min(copy.duration, appState.currentTime - copy.startTime))
+                    var list = copy.properties.keyframes(for: property)
+                    if let index = list.firstIndex(where: { abs($0.time - local) < 0.05 }) {
+                        list[index].value = newValue
+                    } else {
+                        list.append(Keyframe(time: local, value: newValue))
+                    }
+                    copy.properties.setKeyframes(list, for: property)
+                }
+                copy.properties.grade = copy.properties.grade.sanitized
+                appState.updateItem(copy, recordUndo: true)
+            }
+        )
+    }
+
 
     private func transform(_ item: TimelineItem) -> some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -944,12 +996,27 @@ struct PropertiesPanel: View {
                 }
             }
 
-            SegmentedControl(options: availableProperties(for: item),
-                             title: { $0.label },
-                             selection: Binding(
-                                get: { property },
-                                set: { selectedProperty[item.id] = $0 }
-                             ))
+            // 属性分两行：上面是几何 / 不透明度 / 音量，下面是调色四个分量。
+            // 七个挤一行的话「不透明度」会被压成「不透…」
+            let allowed = availableProperties(for: item)
+            let basic = allowed.filter { !$0.isColorGrade }
+            let colorGrade = allowed.filter { $0.isColorGrade }
+            VStack(spacing: 4) {
+                SegmentedControl(options: basic,
+                                 title: { $0.label },
+                                 selection: Binding(
+                                    get: { property },
+                                    set: { selectedProperty[item.id] = $0 }
+                                 ))
+                if !colorGrade.isEmpty {
+                    SegmentedControl(options: colorGrade,
+                                     title: { $0.label },
+                                     selection: Binding(
+                                        get: { property },
+                                        set: { selectedProperty[item.id] = $0 }
+                                     ))
+                }
+            }
 
             // 曲线预览：把整段属性值画成折线，播放头位置画一条竖线
             curvePreview(item: item, property: property)
@@ -1119,6 +1186,8 @@ struct PropertiesPanel: View {
         switch item.type {
         case .audio: return [.volume]
         case .subtitle: return [.opacity]
+        case .video, .aiGenerated:
+            return [.scale, .opacity, .volume] + AnimatableProperty.colorGradeProperties
         default: return [.scale, .opacity, .volume]
         }
     }
@@ -1126,6 +1195,11 @@ struct PropertiesPanel: View {
     private func kfProperty(for item: TimelineItem) -> AnimatableProperty {
         let allowed = availableProperties(for: item)
         if let stored = selectedProperty[item.id], allowed.contains(stored) { return stored }
+        // 没记忆时优先选「已经有关键帧」的那条：给曝光打了动画、
+        // 切走再切回来，不该看到一片空白让人以为动画丢了
+        if let animated = allowed.first(where: { !item.properties.keyframes(for: $0).isEmpty }) {
+            return animated
+        }
         return allowed.first ?? .opacity
     }
 

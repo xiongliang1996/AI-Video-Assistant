@@ -1286,9 +1286,32 @@ enum CompositionBuilder {
         let samples = sampleTimes(marks, lo: lo, hi: hi).map {
             (time: $0, opacity: opacity(at: $0), transform: transform(at: $0))
         }
-        return RenderLayer(trackID: track.trackID,
-                           samples: samples,
-                           grade: props.grade.sanitized)
+        var layer = RenderLayer(trackID: track.trackID, samples: samples)
+        attachGrade(to: &layer, props: props, start: a, span: span)
+        return layer
+    }
+
+    /// 把调色挂到 layer 上。
+    ///
+    /// 有关键帧就生成采样点：时间点直接取 `animationSamples` 的结果——
+    /// 那个函数已经把缓动曲线细分成折线了，这里再线性插值就不会丢掉缓动。
+    /// 没有关键帧只写静态值，合成器连插值都不会做。
+    private static func attachGrade(to layer: inout RenderLayer,
+                                    props: ItemProperties,
+                                    start: Double,
+                                    span: Double) {
+        layer.grade = props.grade.sanitized
+        guard props.hasColorGradeKeyframes, span > 0.0005 else { return }
+
+        var times: Set<Double> = [0, span]
+        for property in AnimatableProperty.colorGradeProperties {
+            for sample in props.animationSamples(property, duration: span) {
+                times.insert(min(max(sample.time, 0), span))
+            }
+        }
+        layer.gradeSamples = times.sorted().map {
+            (time: start + $0, grade: props.resolvedGrade(at: $0))
+        }
     }
 
     /// 转场两层。曲线直接来自 `transitionState`，和系统合成器那份是同一个函数。
@@ -1332,12 +1355,15 @@ enum CompositionBuilder {
             return (t, s.inAlpha, s.inTransform)
         }
         // 层顺序和系统路径一致：前 → 后
-        return [RenderLayer(trackID: prevTrack.trackID,
-                            samples: outSamples,
-                            grade: prev.item.properties.grade.sanitized),
-                RenderLayer(trackID: curTrack.trackID,
-                            samples: inSamples,
-                            grade: cur.item.properties.grade.sanitized)]
+        var outLayer = RenderLayer(trackID: prevTrack.trackID, samples: outSamples)
+        attachGrade(to: &outLayer, props: prev.item.properties,
+                    start: prev.item.startTime,
+                    span: max(0.05, prev.timelineDuration))
+        var inLayer = RenderLayer(trackID: curTrack.trackID, samples: inSamples)
+        attachGrade(to: &inLayer, props: cur.item.properties,
+                    start: cur.item.startTime,
+                    span: max(0.05, cur.timelineDuration))
+        return [outLayer, inLayer]
     }
 
     /// 画中画的曲线，规则和 `applyOverlay` 一一对应（含区间外归零）。
@@ -1397,9 +1423,8 @@ enum CompositionBuilder {
             (time: $0, opacity: opacity(at: $0), transform: transform(at: $0))
         }
 
-        var layer = RenderLayer(trackID: track.trackID,
-                                samples: samples,
-                                grade: props.grade.sanitized)
+        var layer = RenderLayer(trackID: track.trackID, samples: samples)
+        attachGrade(to: &layer, props: props, start: a, span: span)
         if style.hasDecoration {
             layer.cornerRatio = style.cornerRadius
             layer.borderRatio = style.borderWidth
