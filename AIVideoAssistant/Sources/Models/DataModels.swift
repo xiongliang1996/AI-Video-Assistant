@@ -697,6 +697,89 @@ struct PiPStyle: Codable, Hashable {
     }
 }
 
+/// 调色。所有参数都做成「中性值 = 画面完全不变」，
+/// 老项目缺字段时解码出中性值，成片逐像素不变。
+struct ColorGrade: Codable, Hashable {
+    /// 曝光，单位 EV（乘性，不是加亮度）。+1 大约等于快门快一档
+    var exposure: Double = 0
+    /// 对比度，1 = 原样
+    var contrast: Double = 1
+    /// 饱和度，1 = 原样，0 = 黑白
+    var saturation: Double = 1
+    /// 色温，-1 冷（偏蓝）/ 0 原样 / +1 暖（偏黄）
+    var temperature: Double = 0
+
+    static let exposureRange: ClosedRange<Double> = -2...2
+    static let contrastRange: ClosedRange<Double> = 0.5...1.5
+    static let saturationRange: ClosedRange<Double> = 0...2
+    static let temperatureRange: ClosedRange<Double> = -1...1
+
+    /// 色温换算的基准白点：0 对应 6500K（标准日光）
+    static let neutralKelvin: Double = 6500
+    /// 两端各偏多少 K
+    static let kelvinSpan: Double = 2600
+
+    init() {}
+
+    enum CodingKeys: String, CodingKey {
+        case exposure, contrast, saturation, temperature
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        exposure = try c.decodeIfPresent(Double.self, forKey: .exposure) ?? 0
+        contrast = try c.decodeIfPresent(Double.self, forKey: .contrast) ?? 1
+        saturation = try c.decodeIfPresent(Double.self, forKey: .saturation) ?? 1
+        temperature = try c.decodeIfPresent(Double.self, forKey: .temperature) ?? 0
+    }
+
+    var isNeutral: Bool {
+        abs(exposure) < 0.005
+            && abs(contrast - 1) < 0.005
+            && abs(saturation - 1) < 0.005
+            && abs(temperature) < 0.005
+    }
+
+    /// 夹到合法区间。滑杆之外的数值（老版本 / 手改 json）不能让 CI 算出 NaN
+    var sanitized: ColorGrade {
+        var copy = self
+        if !copy.exposure.isFinite { copy.exposure = 0 }
+        if !copy.contrast.isFinite { copy.contrast = 1 }
+        if !copy.saturation.isFinite { copy.saturation = 1 }
+        if !copy.temperature.isFinite { copy.temperature = 0 }
+        copy.exposure = min(max(copy.exposure, ColorGrade.exposureRange.lowerBound),
+                            ColorGrade.exposureRange.upperBound)
+        copy.contrast = min(max(copy.contrast, ColorGrade.contrastRange.lowerBound),
+                            ColorGrade.contrastRange.upperBound)
+        copy.saturation = min(max(copy.saturation, ColorGrade.saturationRange.lowerBound),
+                              ColorGrade.saturationRange.upperBound)
+        copy.temperature = min(max(copy.temperature, ColorGrade.temperatureRange.lowerBound),
+                               ColorGrade.temperatureRange.upperBound)
+        return copy
+    }
+
+    /// 色温滑杆值 → 开尔文，用来喂 CITemperatureAndTint。
+    ///
+    /// 注意方向是**反的**：实测 `inputTargetNeutral` 调高会让画面偏冷
+    /// （target 说「这段素材是在更冷的光下拍的」，补偿出来就是蓝调）。
+    /// 所以「滑杆 +1 = 更暖」要算成更低的 target 色温。
+    var kelvin: Double {
+        ColorGrade.neutralKelvin - temperature * ColorGrade.kelvinSpan
+    }
+
+    /// 面板上的一句话摘要
+    var summary: String {
+        var parts: [String] = []
+        if abs(exposure) >= 0.05 { parts.append(String(format: "EV%+.1f", exposure)) }
+        if abs(contrast - 1) >= 0.02 { parts.append(String(format: "对比%.0f%%", contrast * 100)) }
+        if abs(saturation - 1) >= 0.02 { parts.append(String(format: "饱和%.0f%%", saturation * 100)) }
+        if abs(temperature) >= 0.02 {
+            parts.append(temperature > 0 ? "偏暖" : "偏冷")
+        }
+        return parts.isEmpty ? "原样" : parts.joined(separator: " · ")
+    }
+}
+
 struct ItemProperties: Codable, Hashable {
     var scale: Double = 1.0
     var rotation: Double = 0
@@ -723,6 +806,9 @@ struct ItemProperties: Codable, Hashable {
     /// 画中画几何（只有落在 V2 层的视频片段才用得上）
     var pip: PiPStyle = PiPStyle()
 
+    /// 调色（每个片段独立）
+    var grade: ColorGrade = ColorGrade()
+
     init() {}
 
     // 手写解码：新增字段在旧存档里缺失时回落到默认值
@@ -730,7 +816,7 @@ struct ItemProperties: Codable, Hashable {
         case scale, rotation, opacity, volume, speed, fadeIn, fadeOut
         case textContent, fontSize
         case textColorHex, textBoxOpacity, textOffsetY, textBold
-        case keyframes, pip
+        case keyframes, pip, grade
     }
 
     init(from decoder: Decoder) throws {
@@ -750,6 +836,7 @@ struct ItemProperties: Codable, Hashable {
         textBold = try c.decodeIfPresent(Bool.self, forKey: .textBold) ?? true
         keyframes = try c.decodeIfPresent([String: [Keyframe]].self, forKey: .keyframes) ?? [:]
         pip = try c.decodeIfPresent(PiPStyle.self, forKey: .pip) ?? PiPStyle()
+        grade = try c.decodeIfPresent(ColorGrade.self, forKey: .grade) ?? ColorGrade()
     }
 
     // MARK: 关键帧
@@ -768,6 +855,14 @@ struct ItemProperties: Codable, Hashable {
 
     var hasAnyKeyframes: Bool {
         keyframes.values.contains { !$0.isEmpty }
+    }
+
+    /// 有没有调色。中性值不触发自绘合成器——老项目的成片逐像素不变
+    var hasColorGrade: Bool { !grade.isNeutral }
+
+    /// 有没有任何需要自绘合成器的东西（圆角 / 描边 / 调色）
+    var needsCustomCompositor: Bool {
+        grade.isNeutral == false || pip.hasDecoration
     }
 
     /// 采样：没有关键帧时返回静态值；有则按时间线性插值（两端保持端点值）

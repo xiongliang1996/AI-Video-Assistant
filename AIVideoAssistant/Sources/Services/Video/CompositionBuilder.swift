@@ -552,11 +552,11 @@ enum CompositionBuilder {
             }
         }
 
-        // 画中画设了圆角 / 描边时换成自绘合成器：系统合成器的
-        // layerInstruction 只有变换和不透明度，没有任何遮罩能力。
-        // 没设装饰的项目继续走系统合成器，一行不改。
-        let needsDecoration = overlays.contains { $0.item.properties.pip.hasDecoration }
-        if needsDecoration {
+        // 画中画设了圆角 / 描边、或有片段调了色时换成自绘合成器：
+        // 系统合成器的 layerInstruction 只有变换和不透明度，既没有遮罩、
+        // 也没有调色。没设这些的项目继续走系统合成器，一行不改。
+        let needsCustom = (plans + overlays).contains { $0.item.properties.needsCustomCompositor }
+        if needsCustom {
             vc.customVideoCompositorClass = DecorationCompositor.self
             vc.instructions = makeCompositeInstructions(instructions,
                                                         plans: plans,
@@ -1286,7 +1286,9 @@ enum CompositionBuilder {
         let samples = sampleTimes(marks, lo: lo, hi: hi).map {
             (time: $0, opacity: opacity(at: $0), transform: transform(at: $0))
         }
-        return RenderLayer(trackID: track.trackID, samples: samples)
+        return RenderLayer(trackID: track.trackID,
+                           samples: samples,
+                           grade: props.grade.sanitized)
     }
 
     /// 转场两层。曲线直接来自 `transitionState`，和系统合成器那份是同一个函数。
@@ -1330,8 +1332,12 @@ enum CompositionBuilder {
             return (t, s.inAlpha, s.inTransform)
         }
         // 层顺序和系统路径一致：前 → 后
-        return [RenderLayer(trackID: prevTrack.trackID, samples: outSamples),
-                RenderLayer(trackID: curTrack.trackID, samples: inSamples)]
+        return [RenderLayer(trackID: prevTrack.trackID,
+                            samples: outSamples,
+                            grade: prev.item.properties.grade.sanitized),
+                RenderLayer(trackID: curTrack.trackID,
+                            samples: inSamples,
+                            grade: cur.item.properties.grade.sanitized)]
     }
 
     /// 画中画的曲线，规则和 `applyOverlay` 一一对应（含区间外归零）。
@@ -1391,7 +1397,9 @@ enum CompositionBuilder {
             (time: $0, opacity: opacity(at: $0), transform: transform(at: $0))
         }
 
-        var layer = RenderLayer(trackID: track.trackID, samples: samples)
+        var layer = RenderLayer(trackID: track.trackID,
+                                samples: samples,
+                                grade: props.grade.sanitized)
         if style.hasDecoration {
             layer.cornerRatio = style.cornerRadius
             layer.borderRatio = style.borderWidth

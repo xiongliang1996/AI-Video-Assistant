@@ -43,6 +43,10 @@ struct PropertiesPanel: View {
                         audio(item)
                         divider
                         effects(item)
+                        if item.type == .video || item.type == .aiGenerated {
+                            divider
+                            grade(item)
+                        }
                         if item.type != .subtitle {
                             divider
                             keyframes(item)
@@ -401,6 +405,95 @@ struct PropertiesPanel: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    /// 调色。只有画面片段才有意义——字幕 / 文字是烧录上去的，
+    /// 不经过视频合成，给它们调色只会让人以为调了没用。
+    private func grade(_ item: TimelineItem) -> some View {
+        let style = item.properties.grade
+
+        func apply(_ mutate: (inout ColorGrade) -> Void) {
+            var copy = item
+            mutate(&copy.properties.grade)
+            copy.properties.grade = copy.properties.grade.sanitized
+            appState.updateItem(copy, recordUndo: true)
+        }
+
+        return VStack(alignment: .leading, spacing: 0) {
+            groupHeader("camera.filters", "调色")
+
+            SliderRow(label: "曝光",
+                      value: Binding(
+                        get: { item.properties.grade.exposure },
+                        set: { newValue in apply { $0.exposure = newValue } }
+                      ),
+                      range: ColorGrade.exposureRange,
+                      display: String(format: "%+.1f EV", style.exposure))
+
+            SliderRow(label: "对比度",
+                      value: Binding(
+                        get: { item.properties.grade.contrast },
+                        set: { newValue in apply { $0.contrast = newValue } }
+                      ),
+                      range: ColorGrade.contrastRange,
+                      display: "\(Int((style.contrast * 100).rounded()))%")
+
+            SliderRow(label: "饱和度",
+                      value: Binding(
+                        get: { item.properties.grade.saturation },
+                        set: { newValue in apply { $0.saturation = newValue } }
+                      ),
+                      range: ColorGrade.saturationRange,
+                      display: "\(Int((style.saturation * 100).rounded()))%")
+
+            SliderRow(label: "色温",
+                      value: Binding(
+                        get: { item.properties.grade.temperature },
+                        set: { newValue in apply { $0.temperature = newValue } }
+                      ),
+                      range: ColorGrade.temperatureRange,
+                      display: abs(style.temperature) < 0.02
+                          ? "原样"
+                          : "\(style.temperature > 0 ? "暖" : "冷") \(Int((abs(style.temperature) * 100).rounded()))%")
+
+            HStack(spacing: 6) {
+                Button {
+                    apply { $0 = ColorGrade() }
+                } label: {
+                    Text("还原")
+                        .font(.system(size: 10.5))
+                        .frame(height: 22)
+                        .padding(.horizontal, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Theme.panel)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .stroke(Theme.line, lineWidth: 1)
+                                )
+                        )
+                        .foregroundStyle(style.isNeutral ? Theme.text3 : Theme.text2)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(style.isNeutral)
+
+                Text(style.summary)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.text3)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.top, 6)
+
+            if !style.isNeutral {
+                Text("调色会让这条项目改走逐帧合成，导出比纯拼接略慢。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.text3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 5)
+            }
+        }
     }
 
     private func transform(_ item: TimelineItem) -> some View {

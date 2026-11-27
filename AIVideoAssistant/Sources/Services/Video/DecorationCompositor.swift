@@ -38,6 +38,8 @@ struct RenderLayer {
     var borderRatio: Double = 0
     /// 描边颜色，nil = 不描边
     var borderColor: CGColor?
+    /// 调色。中性值 = 原样
+    var grade: ColorGrade = ColorGrade()
 
     /// 在给定时刻的取值：两端夹住、中间线性插值。
     /// 曲线折点本身就是线性的（关键帧的缓动在采样阶段已经细分过），
@@ -171,6 +173,11 @@ final class DecorationCompositor: NSObject, AVVideoCompositing {
             let sourceRect = source.extent
             guard sourceRect.width > 1, sourceRect.height > 1 else { continue }
 
+            // 先调色再裁圆角：描边是用户挑的颜色，不该被调色带偏
+            if !layer.grade.isNeutral {
+                source = Self.applyGrade(source, layer.grade)
+            }
+
             let short = min(sourceRect.width, sourceRect.height)
             let radius = layer.cornerRatio * short
             let border = layer.borderRatio * short
@@ -205,6 +212,40 @@ final class DecorationCompositor: NSObject, AVVideoCompositing {
                        bounds: canvas,
                        colorSpace: CGColorSpaceCreateDeviceRGB())
         request.finish(withComposedVideoFrame: output)
+    }
+
+    // MARK: - 调色
+
+    /// 曝光 → 白平衡 → 对比度 / 饱和度。
+    ///
+    /// 顺序不是随便排的：曝光和白平衡是「物理量」，先归位；对比度和饱和度是
+    /// 「观感量」，放最后调。反过来先拉对比度再提曝光，高光会先被推爆。
+    static func applyGrade(_ image: CIImage, _ grade: ColorGrade) -> CIImage {
+        let g = grade.sanitized
+        var result = image
+
+        if abs(g.exposure) > 0.005 {
+            result = result.applyingFilter("CIExposureAdjust", parameters: [
+                kCIInputEVKey: g.exposure
+            ])
+        }
+
+        if abs(g.temperature) > 0.005 {
+            // neutral 是「原图被当作的光源色温」，target 是「想让它看起来的色温」。
+            // 往高色温调 = 画面偏暖（相机按更冷的光做白平衡，剩下的就是暖调）
+            result = result.applyingFilter("CITemperatureAndTint", parameters: [
+                "inputNeutral": CIVector(x: ColorGrade.neutralKelvin, y: 0),
+                "inputTargetNeutral": CIVector(x: g.kelvin, y: 0)
+            ])
+        }
+
+        if abs(g.contrast - 1) > 0.005 || abs(g.saturation - 1) > 0.005 {
+            result = result.applyingFilter("CIColorControls", parameters: [
+                kCIInputContrastKey: g.contrast,
+                kCIInputSaturationKey: g.saturation
+            ])
+        }
+        return result
     }
 
     // MARK: - 装饰
