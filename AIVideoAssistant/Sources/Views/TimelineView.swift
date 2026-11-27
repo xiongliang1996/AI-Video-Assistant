@@ -28,6 +28,8 @@ struct TimelineView: View {
     @State private var fadeEdge: FadeEdge?
     @State private var fadeHint: String?
     @State private var fadeHintEdge: FadeEdge?
+    @State private var transitionOrigin: TimelineItem?
+    @State private var transitionHint: String?
 
     private let basePPS: CGFloat = 26
     private let trackHeight: CGFloat = 46
@@ -280,6 +282,7 @@ struct TimelineView: View {
                         pps: pps,
                         fadeHintEdge: fadeHintEdge,
                         fadeHintText: fadeHint,
+                        transitionHint: transitionHint,
                         onSelect: {
                             appState.select(item.id,
                                             additive: NSEvent.modifierFlags.contains(.command))
@@ -311,6 +314,9 @@ struct TimelineView: View {
                         onFadeOut: { translation, ended in
                             handleFade(item, edge: .fadeOut, translation: translation, ended: ended)
                         },
+                        onTransitionDrag: { translation, ended in
+                            handleTransitionDrag(item, translation: translation, ended: ended)
+                        },
                         onClearFade: {
                             appState.select(item.id, additive: false)
                             appState.beginEdit()
@@ -335,6 +341,42 @@ struct TimelineView: View {
         .frame(maxHeight: .infinity)
         .offset(x: CGFloat(appState.currentTime) * pps - 4)
         .allowsHitTesting(false)
+    }
+
+    /// 拖转场重叠区的右边缘。
+    ///
+    /// 和淡入淡出同一套写法：起点取按下时的快照、位移每帧从 0 重算，
+    /// 拖过头再拖回来能原路返回。上限直接用渲染器那套（`transitionCeiling`），
+    /// 所以不会出现「拖得动但画面上重叠区不再变长」。
+    private func handleTransitionDrag(_ item: TimelineItem,
+                                      translation: CGSize,
+                                      ended: Bool) {
+        if ended {
+            transitionOrigin = nil
+            transitionHint = nil
+            return
+        }
+
+        if transitionOrigin?.id != item.id {
+            transitionOrigin = item
+            appState.beginEdit()
+        }
+        guard let origin = transitionOrigin else { return }
+
+        if !appState.selectedItemIDs.contains(item.id) {
+            appState.select(item.id, additive: false)
+        }
+
+        let ceiling = appState.transitionCeiling(for: origin) ?? TimelineLayout.transitionMaxOverlap
+        let value = TransitionDragGeometry.duration(origin: origin.transitionDuration,
+                                                    translation: translation.width,
+                                                    pps: pps,
+                                                    ceiling: ceiling)
+
+        var copy = appState.timeline.first(where: { $0.id == item.id }) ?? origin
+        copy.transitionDuration = value
+        appState.updateItem(copy)
+        transitionHint = String(format: "%.2f s", value)
     }
 
     private func snapLine(at seconds: Double) -> some View {
@@ -788,6 +830,8 @@ struct ClipView: View {
     /// 正在拖淡入 / 淡出手柄时显示的数值气泡
     var fadeHintEdge: FadeEdge?
     var fadeHintText: String?
+    /// 正在拖转场重叠区时显示的数值气泡
+    var transitionHint: String?
 
     var onSelect: () -> Void
     var onMove: (CGSize, Bool) -> Void
@@ -800,6 +844,8 @@ struct ClipView: View {
     /// 拖片段上边缘的淡入 / 淡出手柄
     var onFadeIn: (CGSize, Bool) -> Void = { _, _ in }
     var onFadeOut: (CGSize, Bool) -> Void = { _, _ in }
+    /// 拖转场重叠区的右边缘：改转场时长
+    var onTransitionDrag: (CGSize, Bool) -> Void = { _, _ in }
     var onClearFade: () -> Void = {}
 
     @State private var hovering = false
@@ -993,6 +1039,14 @@ struct ClipView: View {
                             y: -3)
             }
         }
+        // 转场重叠区的右边缘：拖它改转场时长。
+        // 放**下边缘**是为了避开上面的淡入淡出手柄，也避开左侧的裁剪手柄
+        .overlay(alignment: .bottomLeading) {
+            if transitionStatus.isActive, (selected || hovering), width >= 40 {
+                transitionHandle()
+                    .offset(x: TransitionDragGeometry.handleX(overlapWidth: transitionWidth) - 7, y: 3)
+            }
+        }
         .overlay(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .stroke(selected ? Theme.accent : Color.white.opacity(0.45),
@@ -1068,6 +1122,46 @@ struct ClipView: View {
                         .background(Capsule().fill(Theme.accent))
                         .fixedSize()
                         .offset(y: -16)
+                        .allowsHitTesting(false)
+                }
+            }
+    }
+
+    /// 转场重叠区的右边缘手柄。
+    ///
+    /// 用竖条而不是圆点，和淡入淡出的圆点区分开：那个调的是不透明度 / 音量，
+    /// 这个调的是「两段叠多久」。位置放下边缘，上面留给淡入淡出。
+    private func transitionHandle() -> some View {
+        RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+            .fill(Color.white)
+            .frame(width: 4, height: 13)
+            .overlay(
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .stroke(Theme.accent, lineWidth: 1.2)
+            )
+            .shadow(color: .black.opacity(0.3), radius: 1, y: 0.5)
+            .frame(width: 14, height: 22)
+            .contentShape(Rectangle())
+            .help("拖动调整转场时长")
+            .onHover { inside in
+                if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+            }
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in onTransitionDrag(value.translation, false) }
+                    .onEnded { value in onTransitionDrag(value.translation, true) }
+            )
+            .overlay(alignment: .top) {
+                if let transitionHint {
+                    Text(transitionHint)
+                        .font(.system(size: 9, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1.5)
+                        .background(Capsule().fill(Theme.accent))
+                        .fixedSize()
+                        .offset(y: -18)
                         .allowsHitTesting(false)
                 }
             }

@@ -1581,6 +1581,30 @@ enum TimelineLayout {
     /// - Parameters:
     ///   - previous: 同轨道同层、起点更早的最近一段
     ///   - previousAssetDuration: 上一段素材的原始时长；拿不到时跳过「素材余量」检查
+    /// 这一段转场最长能做多久。
+    ///
+    /// 受四件事共同限制：前一段时长的一半、后一段时长的一半、前一段还没被用掉的
+    /// 素材余量、以及全局上限。`nil` 表示前一段素材已经用尽，压根没有尾巴可吃。
+    ///
+    /// 抽出来是为了让「拖重叠区改时长」和「诊断说能不能生效」用同一套上限——
+    /// 各算一份迟早出现「拖到某个位置诊断突然变红」。
+    static func transitionCeiling(for item: TimelineItem,
+                                 previous: TimelineItem?,
+                                 previousAssetDuration: Double? = nil) -> Double? {
+        guard let prev = previous else { return nil }
+        let prevSpeed = min(max(prev.properties.speed, 0.1), 4.0)
+        var budget = min(prev.duration * 0.5, item.duration * 0.5)
+
+        if let assetDuration = previousAssetDuration, assetDuration > 0 {
+            let available = assetDuration - max(0, prev.sourceStart)
+            let consumed = min(prev.duration, available / prevSpeed) * prevSpeed
+            let extraSource = available - consumed
+            guard extraSource > 0.02 else { return nil }
+            budget = min(budget, extraSource / prevSpeed)
+        }
+        return min(budget, transitionMaxOverlap)
+    }
+
     static func transitionStatus(for item: TimelineItem,
                                  previous: TimelineItem?,
                                  previousAssetDuration: Double? = nil) -> TransitionStatus {
@@ -1592,19 +1616,13 @@ enum TimelineLayout {
         if gap > transitionContiguity { return .gap(gap) }
         if gap < -transitionContiguity { return .overlap(-gap) }
 
-        let prevSpeed = min(max(prev.properties.speed, 0.1), 4.0)
-        var budget = min(item.transitionDuration, prev.duration * 0.5, item.duration * 0.5)
-
         // 2. 前一段必须还有没被用掉的素材，转场靠吃这段尾巴
-        if let assetDuration = previousAssetDuration, assetDuration > 0 {
-            let available = assetDuration - max(0, prev.sourceStart)
-            let consumed = min(prev.duration, available / prevSpeed) * prevSpeed
-            let extraSource = available - consumed
-            guard extraSource > 0.02 else { return .noTail }
-            budget = min(budget, extraSource / prevSpeed)
+        guard let ceiling = transitionCeiling(for: item,
+                                             previous: prev,
+                                             previousAssetDuration: previousAssetDuration) else {
+            return .noTail
         }
-
-        budget = min(budget, transitionMaxOverlap)
+        let budget = min(item.transitionDuration, ceiling)
         guard budget >= transitionMinOverlap else { return .tooShort(max(0, budget)) }
         return .active(overlap: budget)
     }

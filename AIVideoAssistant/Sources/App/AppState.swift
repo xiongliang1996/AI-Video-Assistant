@@ -344,6 +344,14 @@ final class AppState: ObservableObject {
                                                previousAssetDuration: prev.flatMap { assetDuration(for: $0) })
     }
 
+    /// 这一段转场最长能拖到多少秒（和诊断用的是同一套上限）
+    func transitionCeiling(for item: TimelineItem) -> Double? {
+        let prev = previousClip(before: item)
+        return TimelineLayout.transitionCeiling(for: item,
+                                               previous: prev,
+                                               previousAssetDuration: prev.flatMap { assetDuration(for: $0) })
+    }
+
     /// 把片段贴到前一段末尾，让转场能生效
     @discardableResult
     func snapToPrevious(_ itemID: UUID) -> Bool {
