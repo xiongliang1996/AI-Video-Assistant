@@ -996,6 +996,41 @@ final class AppState: ObservableObject {
         timeline[index] = item
     }
 
+    // MARK: - 多选批量编辑
+
+    /// 统一调色。整批算一次撤销（滑杆连续拖动 1 秒内合并）
+    @discardableResult
+    func batchGrade(_ mutate: (inout ColorGrade) -> Void) -> BatchEditResult {
+        let result = BatchEdit.applyGrade(to: timeline, ids: selectedItemIDs, mutate)
+        commitBatch(result)
+        return result
+    }
+
+    /// 统一外观（圆角 / 描边 / 投影）
+    @discardableResult
+    func batchDecoration(_ mutate: (inout PiPStyle) -> Void) -> BatchEditResult {
+        let result = BatchEdit.applyDecoration(to: timeline, ids: selectedItemIDs, mutate)
+        commitBatch(result)
+        return result
+    }
+
+    /// 清掉所选片段的调色动画（把播放头那一帧的颜色留下来）
+    @discardableResult
+    func batchClearGradeKeyframes() -> BatchEditResult {
+        let result = BatchEdit.clearGradeKeyframes(to: timeline,
+                                                   ids: selectedItemIDs,
+                                                   playhead: currentTime)
+        commitBatch(result)
+        return result
+    }
+
+    /// 批量改动落盘。没变化就别压撤销快照——否则一路点预设会把撤销栈塞满空记录
+    private func commitBatch(_ result: BatchEditResult) {
+        guard result.changed else { return }
+        beginEdit(coalescing: true)
+        timeline = result.items
+    }
+
     /// 把片段移到另一层（音频 A1/A2、视频 V1/V2）
     func moveToLane(_ item: TimelineItem, lane: Int) {
         let kind = item.trackKind

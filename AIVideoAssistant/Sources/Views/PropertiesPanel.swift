@@ -87,6 +87,8 @@ struct PropertiesPanel: View {
         let videoCount = items.filter { $0.trackKind == .video }.count
         let audioCount = items.filter { $0.trackKind == .audio }.count
         let textCount = items.filter { $0.trackKind == .subtitle }.count
+        let gradeCount = BatchEdit.countGradeable(items)
+        let decorCount = BatchEdit.countDecoratable(items)
 
         return ScrollView {
             VStack(alignment: .leading, spacing: 0) {
@@ -97,6 +99,16 @@ struct PropertiesPanel: View {
                 if videoCount > 0 { infoRow("视频", "\(videoCount)") }
                 if audioCount > 0 { infoRow("音频", "\(audioCount)") }
                 if textCount > 0 { infoRow("字幕", "\(textCount)") }
+
+                if gradeCount > 0 {
+                    divider.padding(.vertical, 10)
+                    batchGradeSection(items)
+                }
+
+                if decorCount > 0 {
+                    divider.padding(.vertical, 10)
+                    batchAppearanceSection(items)
+                }
 
                 divider.padding(.vertical, 10)
 
@@ -128,6 +140,204 @@ struct PropertiesPanel: View {
             .padding(.horizontal, 12)
             .padding(.bottom, 16)
         }
+    }
+
+    // MARK: 批量调色 / 外观
+
+    /// 批量调色。只改**静态调色**：带调色动画的片段静态值根本不参与渲染，
+    /// 硬写进去等于「点了没反应」，所以跳过并单独给一个清动画的入口。
+    private func batchGradeSection(_ items: [TimelineItem]) -> some View {
+        let count = BatchEdit.countGradeable(items)
+        let animated = BatchEdit.countAnimatedGrade(items)
+        let common = BatchEdit.commonGrade(of: items)
+        let shown = common ?? ColorGrade()
+        let presetIndex = common.flatMap { value in
+            ColorGrade.presets.firstIndex { $0.grade.isClose(to: value) }
+        }
+
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                groupHeader("camera.filters", "批量调色")
+                Spacer(minLength: 0)
+                Text("\(count) 个画面片段")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.text3)
+                    .padding(.top, 4)
+            }
+
+            SliderRow(label: "曝光",
+                      value: batchGradeBinding(items, \.exposure, 0),
+                      range: ColorGrade.exposureRange,
+                      display: common == nil ? "混合" : String(format: "%+.1f EV", shown.exposure))
+
+            SliderRow(label: "对比度",
+                      value: batchGradeBinding(items, \.contrast, 1),
+                      range: ColorGrade.contrastRange,
+                      display: common == nil ? "混合" : "\(Int((shown.contrast * 100).rounded()))%")
+
+            SliderRow(label: "饱和度",
+                      value: batchGradeBinding(items, \.saturation, 1),
+                      range: ColorGrade.saturationRange,
+                      display: common == nil ? "混合" : "\(Int((shown.saturation * 100).rounded()))%")
+
+            SliderRow(label: "色温",
+                      value: batchGradeBinding(items, \.temperature, 0),
+                      range: ColorGrade.temperatureRange,
+                      display: common == nil
+                          ? "混合"
+                          : (abs(shown.temperature) < 0.02
+                             ? "原样"
+                             : "\(shown.temperature > 0 ? "暖" : "冷") \(Int((abs(shown.temperature) * 100).rounded()))%"))
+
+            chipGrid(ColorGrade.presets.map(\.label),
+                     activeIndex: presetIndex,
+                     columns: ColorGrade.presets.count) { index in
+                let preset = ColorGrade.presets[index]
+                appState.batchGrade { $0 = preset.grade }
+            }
+
+            if animated > 0 {
+                HStack(alignment: .top, spacing: 5) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 9))
+                    Text("\(animated) 个片段带调色动画，静态调色对它们无效，已跳过")
+                        .font(.system(size: 10))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .foregroundStyle(Theme.text3)
+                .padding(.top, 6)
+
+                Button {
+                    appState.batchClearGradeKeyframes()
+                } label: {
+                    Text("清掉这些片段的调色动画")
+                        .font(.system(size: 11))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(SoftButtonStyle(height: 26, fullWidth: true))
+                .padding(.top, 5)
+            }
+
+            Text("只改调色本身：每个片段原本的对比度、饱和度不会被「拖曝光」抹平。")
+                .font(.system(size: 10))
+                .foregroundStyle(Theme.text3)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 6)
+        }
+    }
+
+    /// 批量外观（圆角 / 描边 / 投影）。只有画中画有这些参数，
+    /// 主画面铺满画幅，裁圆角只会得到四个黑角
+    private func batchAppearanceSection(_ items: [TimelineItem]) -> some View {
+        let count = BatchEdit.countDecoratable(items)
+        let corner = BatchEdit.commonPiP(items, \.cornerRadius)
+        let border = BatchEdit.commonPiP(items, \.borderWidth)
+        let shadow = BatchEdit.commonPiP(items, \.shadowRadius)
+        let color = BatchEdit.commonPiPColor(items)
+        let presets: [(String, Double)] = [("直角", 0), ("小", 0.06), ("大", 0.16), ("胶囊", 0.5)]
+
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                groupHeader("rectangle.on.rectangle", "批量外观")
+                Spacer(minLength: 0)
+                Text("\(count) 个画中画")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.text3)
+                    .padding(.top, 4)
+            }
+
+            SliderRow(label: "圆角",
+                      value: batchPiPBinding(items, \.cornerRadius, 0),
+                      range: PiPStyle.cornerRange,
+                      display: corner == nil
+                          ? "混合"
+                          : (corner! < 0.005 ? "直角" : "\(Int((corner! * 100).rounded()))%"))
+
+            presetGrid(presets, selected: corner ?? -1, columns: presets.count) { value in
+                appState.batchDecoration { $0.cornerRadius = value }
+            }
+
+            SliderRow(label: "描边",
+                      value: batchPiPBinding(items, \.borderWidth, 0),
+                      range: PiPStyle.borderRange,
+                      display: border == nil
+                          ? "混合"
+                          : (border! < 0.0005 ? "关" : String(format: "%.1f%%", border! * 100)))
+
+            HStack(spacing: 7) {
+                ForEach(PiPStyle.borderPalette, id: \.self) { hex in
+                    let active = color == hex
+                    Button {
+                        appState.batchDecoration {
+                            $0.borderColorHex = hex
+                            if $0.borderWidth < 0.004 { $0.borderWidth = 0.02 }
+                        }
+                    } label: {
+                        Circle()
+                            .fill(Color(hex: UInt32(hex)))
+                            .frame(width: 17, height: 17)
+                            .overlay(Circle().stroke(Theme.text3.opacity(0.45), lineWidth: 1))
+                            .overlay(
+                                Circle()
+                                    .stroke(Theme.accent, lineWidth: active ? 2 : 0)
+                                    .padding(-2.5)
+                            )
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(hex == 0xFFFFFF ? "白" : hex == 0x000000 ? "黑" : hex == 0x7C6BFF ? "品牌紫" : "暖黄")
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.top, 7)
+
+            SliderRow(label: "投影",
+                      value: batchPiPBinding(items, \.shadowRadius, 0),
+                      range: PiPStyle.shadowRange,
+                      display: shadow == nil
+                          ? "混合"
+                          : (shadow! < 0.0005 ? "关" : "\(Int((shadow! * 100).rounded()))%"))
+
+            presetGrid(PiPStyle.shadowPresets.map { ($0.label, $0.radius) },
+                       selected: shadow ?? -1,
+                       columns: PiPStyle.shadowPresets.count) { radius in
+                let preset = PiPStyle.shadowPresets.first { abs($0.radius - radius) < 0.0001 }
+                appState.batchDecoration {
+                    $0.shadowRadius = radius
+                    if radius > 0.0005, let preset { $0.shadowOffset = preset.offset }
+                }
+            }
+
+            Text("只作用于画中画（V2）。主画面铺满画幅，圆角只会裁出四个黑角。")
+                .font(.system(size: 10))
+                .foregroundStyle(Theme.text3)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 6)
+        }
+    }
+
+    /// 批量调色滑杆。多选里数值不一致时显示「混合」，拖它就只改这一个分量
+    private func batchGradeBinding(_ items: [TimelineItem],
+                                   _ keyPath: WritableKeyPath<ColorGrade, Double>,
+                                   _ fallback: Double) -> Binding<Double> {
+        Binding(
+            get: { BatchEdit.commonGrade(of: items)?[keyPath: keyPath] ?? fallback },
+            set: { newValue in
+                appState.batchGrade { $0[keyPath: keyPath] = newValue }
+            }
+        )
+    }
+
+    /// 批量外观滑杆
+    private func batchPiPBinding(_ items: [TimelineItem],
+                                 _ keyPath: WritableKeyPath<PiPStyle, Double>,
+                                 _ fallback: Double) -> Binding<Double> {
+        Binding(
+            get: { BatchEdit.commonPiP(items, keyPath) ?? fallback },
+            set: { newValue in
+                appState.batchDecoration { $0[keyPath: keyPath] = newValue }
+            }
+        )
     }
 
     private var divider: some View {
@@ -384,7 +594,7 @@ struct PropertiesPanel: View {
         }
     }
 
-    /// 预设按钮网格。
+    /// 预设按钮网格（按数值匹配选中项）
     ///
     /// 不用 HStack 均分：`frame(maxWidth: .infinity)` 的按钮在 3 列时会被算得
     /// 比可用宽度略宽，最右一个的右圆角正好被容器裁掉（4 列时又刚好放得下）。
@@ -393,6 +603,19 @@ struct PropertiesPanel: View {
                             selected: Double,
                             columns: Int,
                             action: @escaping (Double) -> Void) -> some View {
+        // selected 传 -1（「混合」）时一个都不高亮
+        let active = options.firstIndex { abs(selected - $0.1) < 0.005 }
+        return chipGrid(options.map(\.0), activeIndex: active, columns: columns) { index in
+            action(options[index].1)
+        }
+    }
+
+    /// 预设按钮网格（按序号匹配选中项）。
+    /// 调色预设没法用一个 Double 表示，所以单开一层按序号走
+    private func chipGrid(_ labels: [String],
+                          activeIndex: Int?,
+                          columns: Int,
+                          action: @escaping (Int) -> Void) -> some View {
         // GridItem 的 spacing 是「这一列与下一列之间」，最后一列也带上就会
         // 让整行比容器宽一个 spacing，最右那个按钮的右圆角正好被裁掉
         let count = max(columns, 1)
@@ -400,10 +623,10 @@ struct PropertiesPanel: View {
             GridItem(.flexible(minimum: 0), spacing: index == count - 1 ? 0 : 4)
         }
         return LazyVGrid(columns: gridColumns, spacing: 4) {
-            ForEach(options, id: \.0) { label, value in
-                let active = abs(selected - value) < 0.005
+            ForEach(Array(labels.enumerated()), id: \.offset) { index, label in
+                let active = activeIndex == index
                 Button {
-                    action(value)
+                    action(index)
                 } label: {
                     Text(label)
                         .font(.system(size: 10.5))

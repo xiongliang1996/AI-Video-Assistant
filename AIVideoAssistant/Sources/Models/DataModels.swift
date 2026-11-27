@@ -900,6 +900,34 @@ struct ColorGrade: Codable, Hashable {
         }
         return parts.isEmpty ? "原样" : parts.joined(separator: " · ")
     }
+
+    /// 两个调色在容差内算同一个。多选面板用它判断「公共值 / 混合」
+    func isClose(to other: ColorGrade, tolerance: Double = 0.005) -> Bool {
+        abs(exposure - other.exposure) <= tolerance
+            && abs(contrast - other.contrast) <= tolerance
+            && abs(saturation - other.saturation) <= tolerance
+            && abs(temperature - other.temperature) <= tolerance
+    }
+
+    /// 批量调色的一键预设
+    struct Preset: Identifiable, Hashable {
+        let label: String
+        let grade: ColorGrade
+        var id: String { label }
+    }
+
+    static let presets: [Preset] = [
+        Preset(label: "原样", grade: ColorGrade()),
+        Preset(label: "暖调",
+               grade: ColorGrade(exposure: 0.15, contrast: 1.06,
+                                 saturation: 1.12, temperature: 0.45)),
+        Preset(label: "清冷",
+               grade: ColorGrade(exposure: 0, contrast: 1.08,
+                                 saturation: 0.88, temperature: -0.45)),
+        Preset(label: "黑白",
+               grade: ColorGrade(exposure: 0.05, contrast: 1.22,
+                                 saturation: 0, temperature: 0))
+    ]
 }
 
 struct ItemProperties: Codable, Hashable {
