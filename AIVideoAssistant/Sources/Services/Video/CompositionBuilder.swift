@@ -871,14 +871,9 @@ enum CompositionBuilder {
 
         let outLayer = AVMutableVideoCompositionLayerInstruction(assetTrack: prevTrack)
         let inLayer = AVMutableVideoCompositionLayerInstruction(assetTrack: curTrack)
-        let outBase = baseTransform(plan: prev, renderSize: renderSize)
-        let inBase = baseTransform(plan: cur, renderSize: renderSize)
-        outLayer.setTransform(outBase, at: range.start)
-        inLayer.setTransform(inBase, at: range.start)
-
-        let outOpacity = Float(min(max(prev.item.properties.opacity, 0), 1))
-        let inOpacity = Float(min(max(cur.item.properties.opacity, 0), 1))
-        outLayer.setOpacity(outOpacity, at: range.start)
+        outLayer.setTransform(baseTransform(plan: prev, renderSize: renderSize), at: range.start)
+        inLayer.setTransform(baseTransform(plan: cur, renderSize: renderSize), at: range.start)
+        outLayer.setOpacity(Float(min(max(prev.item.properties.opacity, 0), 1)), at: range.start)
         inLayer.setOpacity(0, at: range.start)
 
         // 任一侧有关键帧时，把转场区间切成小段，逐段把关键帧的缩放 / 不透明度
@@ -894,45 +889,28 @@ enum CompositionBuilder {
             return instruction
         }
 
-        switch cur.item.transition {
-        case .none:
-            break
-
-        case .crossDissolve:
-            outLayer.setOpacityRamp(fromStartOpacity: outOpacity, toEndOpacity: 0, timeRange: range)
-            inLayer.setOpacityRamp(fromStartOpacity: 0, toEndOpacity: inOpacity, timeRange: range)
-
-        case .fadeThroughBlack:
-            // 前后两半共用同一个中点 tick，否则中间会漏一格全黑或叠一格
-            let half = startSeconds + actual / 2
-            if let first = timeRange(from: startSeconds, to: half) {
-                outLayer.setOpacityRamp(fromStartOpacity: outOpacity, toEndOpacity: 0, timeRange: first)
-            }
-            if let second = timeRange(from: half, to: startSeconds + actual) {
-                inLayer.setOpacityRamp(fromStartOpacity: 0, toEndOpacity: inOpacity, timeRange: second)
-            }
-
-        case .slideLeft:
-            let dx = renderSize.width
-            // translatedBy 作用在「源坐标」上，会被 fit 缩放放大数倍；
-            // 这里要的是渲染坐标系里的位移，所以用 concatenating
-            outLayer.setTransformRamp(fromStart: outBase,
-                                      toEnd: outBase.concatenating(CGAffineTransform(translationX: -dx, y: 0)),
-                                      timeRange: range)
-            inLayer.setTransformRamp(fromStart: inBase.concatenating(CGAffineTransform(translationX: dx, y: 0)),
-                                     toEnd: inBase,
-                                     timeRange: range)
-            // 等值的 opacity ramp 会被 AVFoundation 当成 no-op，导致入场层一直透明（中段黑屏），
-            // 这里直接给个定值
-            inLayer.setOpacity(inOpacity, at: range.start)
-
-        case .zoomIn:
-            let center = CGPoint(x: renderSize.width / 2, y: renderSize.height / 2)
-            outLayer.setOpacityRamp(fromStartOpacity: outOpacity, toEndOpacity: 0, timeRange: range)
-            inLayer.setOpacityRamp(fromStartOpacity: 0, toEndOpacity: inOpacity, timeRange: range)
-            inLayer.setTransformRamp(fromStart: inBase.concatenating(scaleAbout(0.86, center: center)),
-                                     toEnd: inBase,
-                                     timeRange: range)
+        // 曲线只有一份（TransitionGeometry），这里不再按类型手写 ramp——
+        // 以前每个转场类型要在系统路径和自绘路径各写一遍，加一个方向就得改两处，
+        // 迟早会漂移。现在只描述「哪几个进度是折点」，其余交给同一份曲线
+        let marks = TransitionGeometry.breakpoints(cur.item.transition)
+        var previous = transitionState(transition: cur.item.transition,
+                                       prev: prev, cur: cur,
+                                       renderSize: renderSize,
+                                       start: startSeconds, duration: actual,
+                                       at: startSeconds)
+        for index in 1..<max(2, marks.count) {
+            let from = startSeconds + actual * marks[index - 1]
+            let to = startSeconds + actual * marks[index]
+            // 相邻两段共用同一个边界 tick，否则段与段之间会漏缝或叠上
+            guard let seg = timeRange(from: from, to: to) else { continue }
+            let current = transitionState(transition: cur.item.transition,
+                                          prev: prev, cur: cur,
+                                          renderSize: renderSize,
+                                          start: startSeconds, duration: actual,
+                                          at: to)
+            emitRamp(outLayer: outLayer, inLayer: inLayer,
+                     from: previous, to: current, range: seg)
+            previous = current
         }
 
         // 层顺序：前 → 后（滑动转场入场层在下，避免把前一段整块盖住）
@@ -1203,33 +1181,75 @@ enum CompositionBuilder {
         let p = min(1, max(0, (t - start) / max(0.001, duration)))
         let outA = clamp01(prev.item.properties.animatedValue(.opacity, at: t - prev.item.startTime))
         let inA = clamp01(cur.item.properties.animatedValue(.opacity, at: t - cur.item.startTime))
-        let outT = baseTransform(plan: prev, renderSize: renderSize,
-                                 scaleOverride: prev.item.properties.animatedValue(.scale, at: t - prev.item.startTime))
-        let inT = baseTransform(plan: cur, renderSize: renderSize,
-                                scaleOverride: cur.item.properties.animatedValue(.scale, at: t - cur.item.startTime))
+        let outBase = baseTransform(plan: prev, renderSize: renderSize,
+                                    scaleOverride: prev.item.properties.animatedValue(.scale, at: t - prev.item.startTime))
+        let inBase = baseTransform(plan: cur, renderSize: renderSize,
+                                   scaleOverride: cur.item.properties.animatedValue(.scale, at: t - cur.item.startTime))
 
-        switch transition {
-        case .none:
-            return (outA, inA, outT, inT)
-        case .crossDissolve:
-            return (outA * (1 - p), inA * p, outT, inT)
-        case .fadeThroughBlack:
-            if p < 0.5 {
-                return (outA * (1 - p * 2), 0, outT, inT)
-            } else {
-                return (0, inA * ((p - 0.5) * 2), outT, inT)
-            }
-        case .slideLeft:
-            let dx = renderSize.width
-            return (outA, inA,
-                    outT.concatenating(CGAffineTransform(translationX: -dx * CGFloat(p), y: 0)),
-                    inT.concatenating(CGAffineTransform(translationX: dx * CGFloat(1 - p), y: 0)))
-        case .zoomIn:
-            let center = CGPoint(x: renderSize.width / 2, y: renderSize.height / 2)
-            let zoom = 0.86 + 0.14 * p
-            return (outA * (1 - p), inA * p,
-                    outT,
-                    inT.concatenating(scaleAbout(zoom, center: center)))
+        // 透明度与几何都来自 TransitionGeometry 这一份曲线，这里只负责把它
+        // 叠到「关键帧算出来的基准变换」上——关键帧与转场因此可以相乘共存
+        let c = TransitionGeometry.curve(transition, progress: p, renderSize: renderSize)
+        let center = CGPoint(x: renderSize.width / 2, y: renderSize.height / 2)
+        return (outA * c.outAlpha, inA * c.inAlpha,
+                layering(outBase, curve: c, isOut: true, center: center),
+                layering(inBase, curve: c, isOut: false, center: center))
+    }
+
+    /// 把曲线给的缩放 / 位移叠到基准变换上。
+    /// 同一个转场不会同时动缩放和位移，所以先后顺序不影响结果
+    private static func layering(_ base: CGAffineTransform,
+                                 curve c: TransitionCurve,
+                                 isOut: Bool,
+                                 center: CGPoint) -> CGAffineTransform {
+        let scale = isOut ? c.outScale : c.inScale
+        let offset = isOut ? c.outOffset : c.inOffset
+        var t = base
+        if abs(scale - 1) > 0.0001 {
+            t = t.concatenating(scaleAbout(scale, center: center))
+        }
+        if abs(offset.width) > 0.0001 || abs(offset.height) > 0.0001 {
+            t = t.concatenating(CGAffineTransform(translationX: offset.width, y: offset.height))
+        }
+        return t
+    }
+
+    /// 发一段 ramp。两端的值完全一样时改发定值——
+    /// **等值的 opacity ramp 会被 AVFoundation 当成 no-op**，入场层会一直透明
+    /// （表现为转场中段黑屏），这是踩过的坑
+    private static func emitRamp(outLayer: AVMutableVideoCompositionLayerInstruction,
+                                 inLayer: AVMutableVideoCompositionLayerInstruction,
+                                 from a: (outAlpha: Double, inAlpha: Double,
+                                          outTransform: CGAffineTransform,
+                                          inTransform: CGAffineTransform),
+                                 to b: (outAlpha: Double, inAlpha: Double,
+                                        outTransform: CGAffineTransform,
+                                        inTransform: CGAffineTransform),
+                                 range: CMTimeRange) {
+        func same(_ x: Double, _ y: Double) -> Bool { abs(x - y) < 0.0005 }
+
+        if same(a.outAlpha, b.outAlpha) {
+            outLayer.setOpacity(Float(a.outAlpha), at: range.start)
+        } else {
+            outLayer.setOpacityRamp(fromStartOpacity: Float(a.outAlpha),
+                                    toEndOpacity: Float(b.outAlpha),
+                                    timeRange: range)
+        }
+        if same(a.inAlpha, b.inAlpha) {
+            inLayer.setOpacity(Float(a.inAlpha), at: range.start)
+        } else {
+            inLayer.setOpacityRamp(fromStartOpacity: Float(a.inAlpha),
+                                   toEndOpacity: Float(b.inAlpha),
+                                   timeRange: range)
+        }
+        if a.outTransform == b.outTransform {
+            outLayer.setTransform(a.outTransform, at: range.start)
+        } else {
+            outLayer.setTransformRamp(fromStart: a.outTransform, toEnd: b.outTransform, timeRange: range)
+        }
+        if a.inTransform == b.inTransform {
+            inLayer.setTransform(a.inTransform, at: range.start)
+        } else {
+            inLayer.setTransformRamp(fromStart: a.inTransform, toEnd: b.inTransform, timeRange: range)
         }
     }
 
@@ -1241,7 +1261,9 @@ enum CompositionBuilder {
                                                renderSize: CGSize,
                                                start: Double,
                                                duration: Double) {
-        let steps = max(6, min(48, Int((duration / 0.05).rounded())))
+        var steps = max(6, min(48, Int((duration / 0.05).rounded())))
+        // 黑场过渡在中点折返，步数是奇数就采不到中点，前后两半各差一格
+        if transition == .fadeThroughBlack, steps % 2 == 1 { steps += 1 }
 
         func state(at t: Double) -> (outAlpha: Float, inAlpha: Float,
                                      outTransform: CGAffineTransform,
@@ -1507,8 +1529,12 @@ enum CompositionBuilder {
         }
 
         // 无关键帧时所有转场都是「两个端点线性插值」，两个采样点就够；
-        // 有关键帧才需要细分，粒度和 applySteppedTransition 的步长对齐
+        // 有关键帧才需要细分，粒度和 applySteppedTransition 的步长对齐。
+        // 分段曲线（黑场过渡）必须采到折点，否则会被插值成一次普通交叉溶解
         var marks: [Double] = [lo, hi]
+        for b in TransitionGeometry.breakpoints(transition) where b > 0.001 && b < 0.999 {
+            marks.append(lo + duration * b)
+        }
         if prev.item.properties.hasAnyKeyframes || cur.item.properties.hasAnyKeyframes {
             let steps = max(6, min(48, Int((duration / 0.05).rounded())))
             for i in 1..<steps {

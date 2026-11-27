@@ -1045,18 +1045,12 @@ struct PropertiesPanel: View {
                 .frame(width: 52, alignment: .leading)
 
             Menu {
-                ForEach(TransitionType.allCases, id: \.self) { type in
-                    Button {
-                        var copy = item
-                        copy.transition = type
-                        if type == .none { copy.transitionDuration = 0 }
-                        else if copy.transitionDuration <= 0 { copy.transitionDuration = 0.6 }
-                        appState.updateItem(copy, recordUndo: true)
-                    } label: {
-                        if item.transition == type {
-                            Label(type.label, systemImage: "checkmark")
-                        } else {
-                            Text(type.label)
+                transitionMenuItem(item, .none)
+                // 九种平铺在一个菜单里找起来费劲，按「溶解 / 推入 / 缩放」分组
+                ForEach(["溶解", "推入", "缩放"], id: \.self) { group in
+                    Section(group) {
+                        ForEach(TransitionType.allCases.filter { $0.group == group }, id: \.self) { type in
+                            transitionMenuItem(item, type)
                         }
                     }
                 }
@@ -1095,6 +1089,23 @@ struct PropertiesPanel: View {
                       display: String(format: "%.1f s", item.transitionDuration))
 
             transitionStatusRow(item)
+        }
+    }
+
+    /// 转场菜单里的一项
+    private func transitionMenuItem(_ item: TimelineItem, _ type: TransitionType) -> some View {
+        Button {
+            var copy = item
+            copy.transition = type
+            if type == .none { copy.transitionDuration = 0 }
+            else if copy.transitionDuration <= 0 { copy.transitionDuration = 0.6 }
+            appState.updateItem(copy, recordUndo: true)
+        } label: {
+            if item.transition == type {
+                Label(type.label, systemImage: "checkmark")
+            } else {
+                Text(type.label)
+            }
         }
     }
 

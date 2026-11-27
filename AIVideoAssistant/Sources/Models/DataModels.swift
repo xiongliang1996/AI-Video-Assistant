@@ -329,7 +329,11 @@ enum TransitionType: String, Codable, CaseIterable, Hashable {
     case crossDissolve
     case fadeThroughBlack
     case slideLeft
+    case slideRight
+    case slideUp
+    case slideDown
     case zoomIn
+    case zoomOut
 
     var label: String {
         switch self {
@@ -337,7 +341,11 @@ enum TransitionType: String, Codable, CaseIterable, Hashable {
         case .crossDissolve: return "交叉溶解"
         case .fadeThroughBlack: return "黑场过渡"
         case .slideLeft: return "左滑推入"
+        case .slideRight: return "右滑推入"
+        case .slideUp: return "上滑推入"
+        case .slideDown: return "下滑推入"
         case .zoomIn: return "缩放推入"
+        case .zoomOut: return "缩放拉出"
         }
     }
 
@@ -347,7 +355,21 @@ enum TransitionType: String, Codable, CaseIterable, Hashable {
         case .crossDissolve: return "circle.lefthalf.filled"
         case .fadeThroughBlack: return "moon.fill"
         case .slideLeft: return "arrow.left.square"
+        case .slideRight: return "arrow.right.square"
+        case .slideUp: return "arrow.up.square"
+        case .slideDown: return "arrow.down.square"
         case .zoomIn: return "plus.magnifyingglass"
+        case .zoomOut: return "minus.magnifyingglass"
+        }
+    }
+
+    /// 菜单里的分组标题（nil 表示不属于任何组）
+    var group: String? {
+        switch self {
+        case .none: return nil
+        case .crossDissolve, .fadeThroughBlack: return "溶解"
+        case .slideLeft, .slideRight, .slideUp, .slideDown: return "推入"
+        case .zoomIn, .zoomOut: return "缩放"
         }
     }
 }
