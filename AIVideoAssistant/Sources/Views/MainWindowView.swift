@@ -38,6 +38,13 @@ struct MainWindowView: View {
                     .environmentObject(appState)
             }
         }
+        .sheet(isPresented: $appState.showingOnboarding) {
+            OnboardingView()
+                .environmentObject(appState)
+        }
+        .sheet(isPresented: $appState.showingPrivacy) {
+            PrivacyView()
+        }
         .sheet(item: $appState.preflightReport) { report in
             PreflightView(report: report,
                           onContinue: { appState.proceedExportAfterPreflight() },

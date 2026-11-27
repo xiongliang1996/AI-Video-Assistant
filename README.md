@@ -51,6 +51,8 @@
 
 ### 体验
 - 全原生 SwiftUI 界面，深浅色自适应
+- **首次使用引导**：三页说清「一条时间线怎么用」「四个区域各管什么」「哪几个快捷键最省时间」，`⌘/` 随时重看；时间线空着的时候提示会说清下一步该拖素材还是先导入，素材库空不空说法不一样
+- **隐私说明**：帮助菜单 →「隐私说明」，把「素材不上传」「哪些操作会联网」「密钥存哪」「日志写在哪」四条摆在一处
 - API Key 存入系统钥匙串，不明文落盘
 - 素材导入即生成缩略图与时长信息
 
@@ -69,11 +71,22 @@
 1. 打开 [Releases](https://github.com/xiongliang1996/AI-Video-Assistant/releases/latest) 页面
 2. 下载 `AIVideoAssistant-macOS.zip`，解压后把 `AI视频助手.app` 拖进「应用程序」
 
-> **说明**：CI 目前使用 `macos-15-intel` 运行器（GitHub 的 arm64 macOS 运行器容量紧张，排队 15 分钟后会被取消），因此产物是 **x86_64 架构**。在 Apple Silicon 上运行需要 Rosetta 2（首次打开系统会提示安装）。
->
-> 想要原生 arm64 版本，用下面的本地构建方式，或在 `.github/workflows/build.yml` 里把 `runs-on: macos-15-intel` 改回 `macos-latest`。
+> **说明**：产物是 **通用二进制（arm64 + x86_64）**，Intel Mac 和 Apple Silicon 都是原生运行，不需要 Rosetta。CI 跑在 `macos-15-intel` 上，用两个架构各编一遍再 `lipo` 合成。
 
-> 应用为 ad-hoc 签名，首次打开需右键 → 打开，或在「系统设置 → 隐私与安全性」中允许。
+### 首次打开被系统拦住怎么办
+
+应用是 **ad-hoc 签名、没有做公证**（Apple 开发者账号每年 $99，个人项目先省了），所以 macOS 会说「无法验证开发者」或直接把图标划一道杠。三个办法任选一个：
+
+1. 右键（或 Control-点击）图标 → **打开** → 弹窗里再点「打开」。之后就不会再拦。
+2. 打开「系统设置 → 隐私与安全性」，页面下方有「仍要打开」按钮。
+3. 命令行去掉隔离标记（最省事）：
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/AI视频助手.app"
+open "/Applications/AI视频助手.app"
+```
+
+这是 Gatekeeper 对「未知开发者」的默认行为，不是应用本身有问题——源码都在这个仓库里，可以自己 `./scripts/build-app.sh` 编一遍再跑。
 
 ### 方式二：从源码构建（原生架构）
 
@@ -102,6 +115,23 @@ open dist/AI视频助手.app
 
 ---
 
+## 隐私
+
+一句话：**素材不上传，只有你主动用 AI 功能时才会联网。** 应用内「帮助 → 隐私说明」有同一份说明。
+
+| 事项 | 具体情况 |
+|------|---------|
+| 素材与项目 | 只在本机解码、合成、导出，不上传、不统计、不需要登录 |
+| AI 生图 | 把**提示词**发给 OpenAI（`/v1/images/generations`） |
+| AI 配音 | 把**文本**发给所选服务商：OpenAI / Azure / 讯飞 |
+| Whisper 转写 | 把**音频片段**发给 OpenAI（`/v1/audio/transcriptions`） |
+| API Key | macOS 钥匙串，项目文件与日志里都没有明文 |
+| 日志 | `~/Library/Logs/AIVideoAssistant/app.log`，记录时间 / 操作 / 错误，含文件路径，不含素材内容；可随时删除 |
+
+不用 AI 功能时，应用不发起任何网络请求（除了你在设置里点「测试连接」）。
+
+---
+
 ## 快捷键
 
 | 快捷键 | 功能 |
@@ -110,6 +140,7 @@ open dist/AI视频助手.app
 | `⌘ O` | 打开项目 |
 | `⌘ S` | 保存项目 |
 | `⌘ ⇧ S` | 导出项目副本 |
+| `⌘ /` | 打开使用引导 |
 | `⌘ I` | 导入素材 |
 | `⌘ ⇧ L` | 重连缺失素材 |
 | `⌘ E` | 导出视频（加入队列） |
@@ -147,12 +178,13 @@ open dist/AI视频助手.app
         │   ├── AI/                 # OpenAI / TTS / 配置管理
         │   ├── Audio/              # 波形分析 + 停顿检测（RMS → dBFS）；AudioDucker：自动闪避包络（纯函数）
         │   ├── Media/              # MediaShelf：素材检索 / 排序 / 分组 / 拖动重排 / 引用统计；AssetRelinker：素材重连（纯函数）
+        │   ├── Onboarding/         # OnboardingContent：引导页文案 / 何时弹 / 空状态文案 / 隐私说明（纯数据）
         │   ├── Diagnostics/        # AppLog：os_log + 落盘日志（分级 / 分类 / 512KB 滚动）
         │   ├── Editing/            # FadeGeometry：淡入淡出手柄的吸附 / 限位 / 落点（纯函数）
         │   ├── Text/               # SubtitleComposer：断句 + 按停顿对齐；SubtitleTiming：时间微调（纯函数）
         │   ├── ProjectStore.swift  # 项目读写
         │   └── Video/              # CompositionBuilder / SubtitleRenderer / VideoExporter / AudioExporter / ThumbnailStore / ExportQueue / HoverPreviewStore
-        └── Views/                  # 设计系统 + 五个界面（含 WaveformView / SmartCutView / ClipThumbnailStrip / MediaHoverPreview / MediaDropTarget / CollectionSheet）
+        └── Views/                  # 设计系统 + 五个界面（含 WaveformView / SmartCutView / ClipThumbnailStrip / MediaHoverPreview / MediaDropTarget / CollectionSheet / OnboardingView）
 ```
 
 ### 架构
@@ -483,6 +515,8 @@ AVFoundation 没有内建的 sidechain 压缩，做不了「按另一条轨的�
 - [x] 仅导出音频（M4A，和视频共用队列）+ 导出完成自动打开成品
 - [x] 通用二进制（arm64 + x86_64 用 `lipo` 合成，CI 里校验两个架构都在）
 - [x] 落盘日志（分级 / 分类 / 512KB 滚动 + 设置页入口，素材与项目读取失败不再静默）
+- [x] 首次使用引导（三页 + `⌘/` 重看）+ 空时间线提示（按素材库状态换文案）
+- [x] 隐私说明（应用内面板 + README）+ 未公证应用的 Gatekeeper 打开说明
 - [ ] Sora 视频生成接入（等待 API 开放）
 
 ---

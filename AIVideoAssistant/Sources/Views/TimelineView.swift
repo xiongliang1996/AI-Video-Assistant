@@ -88,6 +88,15 @@ struct TimelineView: View {
                                                            onDrop: handleDrop))
                 }
             }
+            // 空时间线的提示挂在「轨道区整体」上，不能挂在 ScrollView 内容里：
+            // 内容宽度是 canvasWidth（≥900pt），按它居中会飘到屏幕外被裁掉。
+            // 也不能挡住拖放，所以不接收点击
+            .overlay {
+                if appState.timeline.isEmpty {
+                    emptyHint
+                        .allowsHitTesting(false)
+                }
+            }
         }
         // 5 条轨道（V1 / V2 / A1 / A2 / S1）+ 标尺 + 工具栏
         .frame(height: 288)
@@ -95,6 +104,38 @@ struct TimelineView: View {
         .overlay(alignment: .top) {
             Rectangle().fill(Theme.line).frame(height: 1)
         }
+    }
+
+    // MARK: - 空状态
+
+    /// 文案由 `EmptyTimelineHint` 决定（素材库空不空说法不一样），这里只管画
+    private var emptyHint: some View {
+        let hint = appState.emptyTimelineHint
+        return VStack(spacing: 6) {
+            Image(systemName: "arrow.down.to.line")
+                .font(.system(size: 18, weight: .light))
+                .foregroundStyle(Theme.text3)
+            Text(hint.title)
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(Theme.text2)
+            Text(hint.subtitle)
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.text3)
+            if hint.suggestsDemo {
+                Text("想先看看效果？按 ⌘/ 打开使用引导")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.accent.opacity(0.85))
+                    .padding(.top, 2)
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Theme.panel.opacity(0.94))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Theme.line2, lineWidth: 1))
+        )
     }
 
     // MARK: - 工具栏

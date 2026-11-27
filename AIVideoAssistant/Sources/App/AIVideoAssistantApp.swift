@@ -102,6 +102,13 @@ struct AIVideoAssistantApp: App {
                 Button("设置…") { appState.showingSettings = true }
                     .keyboardShortcut(",", modifiers: .command)
             }
+            CommandGroup(replacing: .help) {
+                Button("使用引导") { appState.presentOnboarding() }
+                    .keyboardShortcut("/", modifiers: .command)
+                Button("隐私说明") { appState.presentPrivacy() }
+                Divider()
+                Button("打开日志文件") { AppLog.revealLogFile() }
+            }
         }
     }
 }

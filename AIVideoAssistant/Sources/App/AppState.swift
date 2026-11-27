@@ -53,6 +53,9 @@ final class AppState: ObservableObject {
     @Published var relinkCandidates: [AssetRelinker.Missing] = []
     /// 音乐自动闪避面板
     @Published var showingAutoDuck = false
+    /// 首次使用引导 / 隐私说明
+    @Published var showingOnboarding = false
+    @Published var showingPrivacy = false
     /// 闪避的目标片段（被压音量的那条）
     @Published var autoDuckTargetID: UUID?
     /// 闪避的参考来源。记在全局状态里，同一个项目连着做几段音乐不用每次重选
@@ -192,6 +195,15 @@ final class AppState: ObservableObject {
 
         // 首次启动即落盘，保证项目文件立刻存在
         saveNow()
+
+        // 引导要等窗口出来再弹，否则 sheet 会挂在还没上屏的窗口上。
+        // 判断放这里而不是视图里，是为了让「什么时候该弹」只有一处逻辑
+        if OnboardingGate.shouldPresent(stored: OnboardingGate.storedVersion()) {
+            AppLog.info(.app, "首次启动：展示使用引导")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                self?.showingOnboarding = true
+            }
+        }
 
         terminateObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
@@ -1558,6 +1570,20 @@ final class AppState: ObservableObject {
     func presentAssetRelink() {
         relinkCandidates = scanMissingAssets()
         showingAssetRelink = true
+    }
+
+    /// 手动重看引导（帮助菜单）。不改已读记录，下次升级照样会弹新的
+    func presentOnboarding() {
+        showingOnboarding = true
+    }
+
+    func presentPrivacy() {
+        showingPrivacy = true
+    }
+
+    /// 空时间线上写什么，取决于素材库有没有东西
+    var emptyTimelineHint: EmptyTimelineHint {
+        EmptyTimelineHint.make(mediaCount: mediaLibrary.count)
     }
 
     /// 把某个旧路径重连到新选的文件
