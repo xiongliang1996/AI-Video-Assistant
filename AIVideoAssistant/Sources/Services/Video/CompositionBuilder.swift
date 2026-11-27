@@ -697,6 +697,15 @@ enum CompositionBuilder {
                                          track: AVMutableCompositionTrack,
                                          renderSize: CGSize,
                                          range: CMTimeRange) -> AVMutableVideoCompositionLayerInstruction {
+        // 有入场 / 出场动效时走单独一条路径：动效要求不透明度和变换按**同一条
+        // 采样表**发 ramp，而下面这段淡入淡出逻辑有一堆「ramp 端点必须和片段
+        // 结尾同一个 tick」的细节（验证过几百条断言）。两套逻辑混在一起容易
+        // 互相踩，所以干脆分开：没有动效的项目仍然走原来那条，一个字节都不变
+        if plan.item.properties.motion.hasMotion {
+            return motionLayerInstruction(plan: plan, track: track,
+                                          renderSize: renderSize, range: range)
+        }
+
         let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: track)
         let base = baseTransform(plan: plan, renderSize: renderSize)
         let clipStart = plan.item.startTime
@@ -753,6 +762,97 @@ enum CompositionBuilder {
             if let ramp = timeRange(from: clipEnd - fadeOut, to: clipEnd) {
                 layer.setOpacityRamp(fromStartOpacity: opacity, toEndOpacity: 0, timeRange: ramp)
             }
+        }
+        return layer
+    }
+
+    /// 主画面的入场 / 出场动效。
+    ///
+    /// 和画中画的区别只有一处：位移按**画幅**宽高换算（`rect = 画幅`），
+    /// 所以「左侧入场」在主画面上是整帧从画面左边推进来，在画中画上是
+    /// 那个小窗从自己左边滑进来。
+    private static func motionLayerInstruction(plan: ClipPlan,
+                                               track: AVMutableCompositionTrack,
+                                               renderSize: CGSize,
+                                               range: CMTimeRange) -> AVMutableVideoCompositionLayerInstruction {
+        let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: track)
+        let props = plan.item.properties
+        let a = plan.item.startTime
+        let span = max(0.05, plan.timelineDuration)
+        let motionStyle = props.motion.sanitized
+        let half = span / 2
+        // 和淡入同一条规矩：片段开头就在转场里的话，入场交给转场，不再叠加
+        let fadeIn = plan.inTransition > 0 ? 0 : min(max(0, props.fadeIn), half)
+        let fadeOut = min(max(0, props.fadeOut), half)
+        let opacityKeyed = !props.keyframes(for: .opacity).isEmpty
+        let scaleKeyed = !props.keyframes(for: .scale).isEmpty
+        let frameRect = CGRect(origin: .zero, size: renderSize)
+
+        func factors(_ t: Double) -> PiPMotionFactors {
+            PiPMotion.combined(enter: motionStyle.enterMotion,
+                               enterDuration: motionStyle.enterDuration,
+                               exit: motionStyle.exitMotion,
+                               exitDuration: motionStyle.exitDuration,
+                               span: span,
+                               at: min(max(t - a, 0), span))
+        }
+
+        func opacity(_ t: Double) -> Double {
+            let local = min(max(t - a, 0), span)
+            var value: Double
+            if opacityKeyed {
+                value = min(max(props.animatedValue(.opacity, at: local), 0), 1)
+            } else {
+                value = min(max(props.opacity, 0), 1)
+                if fadeIn > 0.02, local < fadeIn { value *= local / fadeIn }
+                if fadeOut > 0.02, local > span - fadeOut { value *= (span - local) / fadeOut }
+            }
+            return max(0, value) * factors(t).opacity
+        }
+
+        func transform(_ t: Double) -> CGAffineTransform {
+            let local = min(max(t - a, 0), span)
+            let base = baseTransform(plan: plan, renderSize: renderSize,
+                                     scaleOverride: scaleKeyed
+                                        ? props.animatedValue(.scale, at: local) : nil)
+            return PiPMotion.apply(factors(t), to: base, rect: frameRect)
+        }
+
+        var marks: [Double] = [a, a + span]
+        if fadeIn > 0.02 { marks.append(a + fadeIn) }
+        if fadeOut > 0.02 { marks.append(a + span - fadeOut) }
+        if scaleKeyed {
+            marks += props.animationSamples(.scale, duration: span).map { a + $0.time }
+        }
+        if opacityKeyed {
+            marks += props.animationSamples(.opacity, duration: span).map { a + $0.time }
+        }
+        marks += PiPMotion.sampleOffsets(span: span,
+                                         enterDuration: motionStyle.enterDuration,
+                                         exitDuration: motionStyle.exitDuration).map { a + $0 }
+
+        let lo = CMTimeGetSeconds(range.start)
+        let hi = CMTimeGetSeconds(range.end)
+        var times: [Double] = [lo, hi]
+        for t in marks where t > lo + 0.0005 && t < hi - 0.0005 {
+            if times.allSatisfy({ abs($0 - t) > 0.0005 }) { times.append(t) }
+        }
+        times.sort()
+
+        // 起点先落一个定值，否则指令从片段中间切开时第一段没有起始状态
+        layer.setOpacity(Float(opacity(times[0])), at: range.start)
+        layer.setTransform(transform(times[0]), at: range.start)
+
+        for index in 1..<times.count {
+            let t0 = times[index - 1]
+            let t1 = times[index]
+            guard t1 - t0 > 0.0005, let ramp = timeRange(from: t0, to: t1) else { continue }
+            layer.setOpacityRamp(fromStartOpacity: Float(opacity(t0)),
+                                 toEndOpacity: Float(opacity(t1)),
+                                 timeRange: ramp)
+            layer.setTransformRamp(fromStart: transform(t0),
+                                   toEnd: transform(t1),
+                                   timeRange: ramp)
         }
         return layer
     }
@@ -971,16 +1071,16 @@ enum CompositionBuilder {
         // 有关键帧时整段交给关键帧，淡入淡出不再叠加（和主画面片段规则一致）
         let opacityKeyed = !props.keyframes(for: .opacity).isEmpty
         let scaleKeyed = !props.keyframes(for: .scale).isEmpty
-        let style = props.pip.sanitized
-        let motionActive = style.hasMotion
+        let motionStyle = props.motion.sanitized
+        let motionActive = motionStyle.hasMotion
 
         /// 该时刻的入场 / 出场乘数
         func motion(_ local: Double) -> PiPMotionFactors {
             guard motionActive else { return PiPMotionFactors() }
-            return PiPMotion.combined(enter: style.enterMotion,
-                                      enterDuration: style.enterDuration,
-                                      exit: style.exitMotion,
-                                      exitDuration: style.exitDuration,
+            return PiPMotion.combined(enter: motionStyle.enterMotion,
+                                      enterDuration: motionStyle.enterDuration,
+                                      exit: motionStyle.exitMotion,
+                                      exitDuration: motionStyle.exitDuration,
                                       span: span,
                                       at: local)
         }
@@ -1030,8 +1130,8 @@ enum CompositionBuilder {
         }
         if motionActive {
             for offset in PiPMotion.sampleOffsets(span: span,
-                                                  enterDuration: style.enterDuration,
-                                                  exitDuration: style.exitDuration) {
+                                                  enterDuration: motionStyle.enterDuration,
+                                                  exitDuration: motionStyle.exitDuration) {
                 breaks.append(min(max(a + offset, a), b))
             }
         }
@@ -1298,24 +1398,45 @@ enum CompositionBuilder {
         let fadeOut = min(max(0, props.fadeOut), half)
         let opacityKeyed = !props.keyframes(for: .opacity).isEmpty
         let scaleKeyed = !props.keyframes(for: .scale).isEmpty
+        let motionStyle = props.motion.sanitized
+        let motionActive = motionStyle.hasMotion
         let fixed = baseTransform(plan: plan, renderSize: renderSize)
+        let frameRect = CGRect(origin: .zero, size: renderSize)
+
+        func factors(_ l: Double) -> PiPMotionFactors {
+            guard motionActive else { return PiPMotionFactors() }
+            return PiPMotion.combined(enter: motionStyle.enterMotion,
+                                      enterDuration: motionStyle.enterDuration,
+                                      exit: motionStyle.exitMotion,
+                                      exitDuration: motionStyle.exitDuration,
+                                      span: span,
+                                      at: l)
+        }
 
         func opacity(at t: Double) -> Double {
             let local = t - a
             guard local >= -0.0005, local <= span + 0.0005 else { return 0 }
             let l = min(max(local, 0), span)
-            if opacityKeyed { return min(max(props.animatedValue(.opacity, at: l), 0), 1) }
-            var value = min(max(props.opacity, 0), 1)
-            if fadeIn > 0.02, l < fadeIn { value *= l / fadeIn }
-            if fadeOut > 0.02, l > span - fadeOut { value *= (span - l) / fadeOut }
-            return max(0, value)
+            let base: Double
+            if opacityKeyed {
+                base = min(max(props.animatedValue(.opacity, at: l), 0), 1)
+            } else {
+                var value = min(max(props.opacity, 0), 1)
+                if fadeIn > 0.02, l < fadeIn { value *= l / fadeIn }
+                if fadeOut > 0.02, l > span - fadeOut { value *= (span - l) / fadeOut }
+                base = max(0, value)
+            }
+            return base * factors(l).opacity
         }
 
         func transform(at t: Double) -> CGAffineTransform {
-            guard scaleKeyed else { return fixed }
+            guard scaleKeyed || motionActive else { return fixed }
             let l = min(max(t - a, 0), span)
-            return baseTransform(plan: plan, renderSize: renderSize,
-                                 scaleOverride: props.animatedValue(.scale, at: l))
+            let base = baseTransform(plan: plan, renderSize: renderSize,
+                                     scaleOverride: scaleKeyed
+                                        ? props.animatedValue(.scale, at: l) : nil)
+            guard motionActive else { return base }
+            return PiPMotion.apply(factors(l), to: base, rect: frameRect)
         }
 
         var marks: [Double] = [a, b]
@@ -1326,6 +1447,11 @@ enum CompositionBuilder {
         }
         if opacityKeyed {
             marks += props.animationSamples(.opacity, duration: span).map { a + $0.time }
+        }
+        if motionActive {
+            marks += PiPMotion.sampleOffsets(span: span,
+                                             enterDuration: motionStyle.enterDuration,
+                                             exitDuration: motionStyle.exitDuration).map { a + $0 }
         }
 
         let samples = sampleTimes(marks, lo: lo, hi: hi).map {
@@ -1429,15 +1555,16 @@ enum CompositionBuilder {
         let opacityKeyed = !props.keyframes(for: .opacity).isEmpty
         let scaleKeyed = !props.keyframes(for: .scale).isEmpty
         let style = props.pip.sanitized
-        let motionActive = style.hasMotion
+        let motionStyle = props.motion.sanitized
+        let motionActive = motionStyle.hasMotion
         let fixed = pipTransform(plan: plan, renderSize: renderSize)
 
         func motion(_ local: Double) -> PiPMotionFactors {
             guard motionActive else { return PiPMotionFactors() }
-            return PiPMotion.combined(enter: style.enterMotion,
-                                      enterDuration: style.enterDuration,
-                                      exit: style.exitMotion,
-                                      exitDuration: style.exitDuration,
+            return PiPMotion.combined(enter: motionStyle.enterMotion,
+                                      enterDuration: motionStyle.enterDuration,
+                                      exit: motionStyle.exitMotion,
+                                      exitDuration: motionStyle.exitDuration,
                                       span: span,
                                       at: local)
         }
@@ -1482,8 +1609,8 @@ enum CompositionBuilder {
         }
         if motionActive {
             for offset in PiPMotion.sampleOffsets(span: span,
-                                                  enterDuration: style.enterDuration,
-                                                  exitDuration: style.exitDuration) {
+                                                  enterDuration: motionStyle.enterDuration,
+                                                  exitDuration: motionStyle.exitDuration) {
                 marks.append(min(max(a + offset, a), b))
             }
         }

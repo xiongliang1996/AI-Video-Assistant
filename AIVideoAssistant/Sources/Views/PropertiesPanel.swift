@@ -35,8 +35,10 @@ struct PropertiesPanel: View {
                         divider
                         if item.isOverlay {
                             pip(item)
-                            pipMotion(item)
                             pipAppearance(item)
+                        }
+                        if item.type == .video || item.type == .aiGenerated {
+                            motionSection(item)
                             divider
                         }
                         transform(item)
@@ -477,24 +479,25 @@ struct PropertiesPanel: View {
         }
     }
 
-    /// 入场 / 出场动效。
+    /// 入场 / 出场动效。主画面和画中画共用一套（字段在 `ItemProperties.motion`）。
     ///
     /// 动效是叠在「淡入淡出 + 关键帧」之上的一层乘数：已经打了缩放关键帧的
-    /// 画中画照样能加一个淡入放大，两者相乘。所以这里不碰关键帧面板。
-    private func pipMotion(_ item: TimelineItem) -> some View {
-        let style = item.properties.pip
+    /// 片段照样能加一个淡入放大，两者相乘。所以这里不碰关键帧面板。
+    private func motionSection(_ item: TimelineItem) -> some View {
+        let style = item.properties.motion
         let all = PiPMotionStyle.allCases
+        let isOverlay = item.isOverlay
 
-        func apply(_ mutate: (inout PiPStyle) -> Void) {
+        func apply(_ mutate: (inout ItemMotion) -> Void) {
             var copy = item
-            mutate(&copy.properties.pip)
-            copy.properties.pip = copy.properties.pip.sanitized
+            mutate(&copy.properties.motion)
+            copy.properties.motion = copy.properties.motion.sanitized
             appState.updateItem(copy, recordUndo: true)
         }
 
-        func durationBinding(_ keyPath: WritableKeyPath<PiPStyle, Double>) -> Binding<Double> {
+        func durationBinding(_ keyPath: WritableKeyPath<ItemMotion, Double>) -> Binding<Double> {
             Binding(
-                get: { item.properties.pip[keyPath: keyPath] },
+                get: { item.properties.motion[keyPath: keyPath] },
                 set: { newValue in apply { $0[keyPath: keyPath] = newValue } }
             )
         }
@@ -545,7 +548,9 @@ struct PropertiesPanel: View {
                     .padding(.top, 4)
             }
 
-            Text("动效和淡入淡出、缩放关键帧相乘，不会互相覆盖；时长超过半个片段会自动收住。")
+            Text(isOverlay
+                 ? "动效和淡入淡出、缩放关键帧相乘，不会互相覆盖；位移按画中画自身宽高算。"
+                 : "动效和淡入淡出、缩放关键帧相乘，不会互相覆盖；位移按画幅宽高算，时长超过半个片段会自动收住。")
                 .font(.system(size: 10))
                 .foregroundStyle(Theme.text3)
                 .fixedSize(horizontal: false, vertical: true)
