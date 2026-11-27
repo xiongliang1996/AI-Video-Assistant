@@ -35,6 +35,7 @@ struct PropertiesPanel: View {
                         divider
                         if item.isOverlay {
                             pip(item)
+                            pipAppearance(item)
                             divider
                         }
                         transform(item)
@@ -258,6 +259,112 @@ struct PropertiesPanel: View {
                 .foregroundStyle(Theme.text3)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 8)
+        }
+    }
+
+    /// 圆角 / 描边。设了任意一项就会让这条项目改走自绘合成器，
+    /// 所以文案里写一句「会多花点导出时间」，省得用户以为是卡住了。
+    private func pipAppearance(_ item: TimelineItem) -> some View {
+        let style = item.properties.pip
+
+        func apply(_ mutate: (inout PiPStyle) -> Void) {
+            var copy = item
+            mutate(&copy.properties.pip)
+            copy.properties.pip = copy.properties.pip.sanitized
+            appState.updateItem(copy, recordUndo: true)
+        }
+
+        let presets: [(String, Double)] = [("直角", 0), ("小", 0.06), ("大", 0.16), ("胶囊", 0.5)]
+
+        return VStack(alignment: .leading, spacing: 0) {
+            Text("外观")
+                .font(.system(size: 11.5))
+                .foregroundStyle(Theme.text2)
+                .padding(.top, 8)
+                .padding(.bottom, 5)
+
+            SliderRow(label: "圆角",
+                      value: Binding(
+                        get: { item.properties.pip.cornerRadius },
+                        set: { newValue in apply { $0.cornerRadius = newValue } }
+                      ),
+                      range: PiPStyle.cornerRange,
+                      display: style.cornerRadius < 0.005
+                          ? "直角"
+                          : "\(Int((style.cornerRadius * 100).rounded()))%")
+
+            HStack(spacing: 4) {
+                ForEach(presets, id: \.0) { label, value in
+                    let active = abs(style.cornerRadius - value) < 0.005
+                    Button {
+                        apply { $0.cornerRadius = value }
+                    } label: {
+                        Text(label)
+                            .font(.system(size: 10.5))
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 22)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(active ? Theme.accent.opacity(0.16) : Theme.panel)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .stroke(active ? Theme.accent.opacity(0.55) : Theme.line,
+                                                    lineWidth: 1)
+                                    )
+                            )
+                            .foregroundStyle(active ? Theme.accent : Theme.text2)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.top, 5)
+
+            SliderRow(label: "描边",
+                      value: Binding(
+                        get: { item.properties.pip.borderWidth },
+                        set: { newValue in apply { $0.borderWidth = newValue } }
+                      ),
+                      range: PiPStyle.borderRange,
+                      display: style.borderWidth < 0.0005
+                          ? "关"
+                          : String(format: "%.1f%%", style.borderWidth * 100))
+
+            HStack(spacing: 7) {
+                ForEach(PiPStyle.borderPalette, id: \.self) { hex in
+                    let active = style.borderColorHex == hex
+                    Button {
+                        // 只点颜色、宽度还是 0 的话看起来「没反应」，
+                        // 顺手给一个能看见的最小宽度
+                        apply {
+                            $0.borderColorHex = hex
+                            if $0.borderWidth < 0.004 { $0.borderWidth = 0.02 }
+                        }
+                    } label: {
+                        Circle()
+                            .fill(Color(hex: UInt32(hex)))
+                            .frame(width: 17, height: 17)
+                            // 纯白和纯黑都用同一条中性描边：换主题时才不会有一个消失
+                            .overlay(Circle().stroke(Theme.text3.opacity(0.45), lineWidth: 1))
+                            .overlay(
+                                Circle()
+                                    .stroke(Theme.accent, lineWidth: active ? 2 : 0)
+                                    .padding(-2.5)
+                            )
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(hex == 0xFFFFFF ? "白" : hex == 0x000000 ? "黑" : hex == 0x7C6BFF ? "品牌紫" : "暖黄")
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.top, 7)
+
+            Text("圆角和描边会在导出时逐帧合成，比纯拼接略慢一点。")
+                .font(.system(size: 10))
+                .foregroundStyle(Theme.text3)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 6)
         }
     }
 

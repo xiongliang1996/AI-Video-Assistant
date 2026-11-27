@@ -552,7 +552,21 @@ enum CompositionBuilder {
             }
         }
 
-        vc.instructions = instructions
+        // 画中画设了圆角 / 描边时换成自绘合成器：系统合成器的
+        // layerInstruction 只有变换和不透明度，没有任何遮罩能力。
+        // 没设装饰的项目继续走系统合成器，一行不改。
+        let needsDecoration = overlays.contains { $0.item.properties.pip.hasDecoration }
+        if needsDecoration {
+            vc.customVideoCompositorClass = DecorationCompositor.self
+            vc.instructions = makeCompositeInstructions(instructions,
+                                                        plans: plans,
+                                                        videoTracks: videoTracks,
+                                                        overlays: overlays,
+                                                        overlayTracks: overlayTracks,
+                                                        renderSize: renderSize)
+        } else {
+            vc.instructions = instructions
+        }
         return vc
     }
 
@@ -1026,6 +1040,54 @@ enum CompositionBuilder {
     // MARK: - 带关键帧的转场
 
     /// 把转场区间切成小段，逐段计算「转场进度 × 关键帧值」，再发 ramp
+    /// 转场在某一时刻的两层状态：不透明度 + 变换。
+    ///
+    /// 抽成静态函数是为了让两条路径共用同一份曲线——系统合成器走
+    /// `setOpacityRamp` / `setTransformRamp`，自绘合成器走采样点。
+    /// 各写一份迟早会漂移：预览看着没问题、导出少淡一格这种 bug 最难查。
+    private static func transitionState(transition: TransitionType,
+                                        prev: ClipPlan,
+                                        cur: ClipPlan,
+                                        renderSize: CGSize,
+                                        start: Double,
+                                        duration: Double,
+                                        at t: Double) -> (outAlpha: Double, inAlpha: Double,
+                                                          outTransform: CGAffineTransform,
+                                                          inTransform: CGAffineTransform) {
+        func clamp01(_ v: Double) -> Double { min(1, max(0, v)) }
+        let p = min(1, max(0, (t - start) / max(0.001, duration)))
+        let outA = clamp01(prev.item.properties.animatedValue(.opacity, at: t - prev.item.startTime))
+        let inA = clamp01(cur.item.properties.animatedValue(.opacity, at: t - cur.item.startTime))
+        let outT = baseTransform(plan: prev, renderSize: renderSize,
+                                 scaleOverride: prev.item.properties.animatedValue(.scale, at: t - prev.item.startTime))
+        let inT = baseTransform(plan: cur, renderSize: renderSize,
+                                scaleOverride: cur.item.properties.animatedValue(.scale, at: t - cur.item.startTime))
+
+        switch transition {
+        case .none:
+            return (outA, inA, outT, inT)
+        case .crossDissolve:
+            return (outA * (1 - p), inA * p, outT, inT)
+        case .fadeThroughBlack:
+            if p < 0.5 {
+                return (outA * (1 - p * 2), 0, outT, inT)
+            } else {
+                return (0, inA * ((p - 0.5) * 2), outT, inT)
+            }
+        case .slideLeft:
+            let dx = renderSize.width
+            return (outA, inA,
+                    outT.concatenating(CGAffineTransform(translationX: -dx * CGFloat(p), y: 0)),
+                    inT.concatenating(CGAffineTransform(translationX: dx * CGFloat(1 - p), y: 0)))
+        case .zoomIn:
+            let center = CGPoint(x: renderSize.width / 2, y: renderSize.height / 2)
+            let zoom = 0.86 + 0.14 * p
+            return (outA * (1 - p), inA * p,
+                    outT,
+                    inT.concatenating(scaleAbout(zoom, center: center)))
+        }
+    }
+
     private static func applySteppedTransition(transition: TransitionType,
                                                prev: ClipPlan,
                                                cur: ClipPlan,
@@ -1035,57 +1097,14 @@ enum CompositionBuilder {
                                                start: Double,
                                                duration: Double) {
         let steps = max(6, min(48, Int((duration / 0.05).rounded())))
-        let dx = renderSize.width
-        let center = CGPoint(x: renderSize.width / 2, y: renderSize.height / 2)
 
-        func clamp01(_ v: Double) -> Float { Float(min(1, max(0, v))) }
-
-        func outScale(_ t: Double) -> CGAffineTransform {
-            baseTransform(plan: prev, renderSize: renderSize,
-                          scaleOverride: prev.item.properties.animatedValue(.scale, at: t - prev.item.startTime))
-        }
-        func inScale(_ t: Double) -> CGAffineTransform {
-            baseTransform(plan: cur, renderSize: renderSize,
-                          scaleOverride: cur.item.properties.animatedValue(.scale, at: t - cur.item.startTime))
-        }
-        func outAlpha(_ t: Double) -> Float {
-            clamp01(prev.item.properties.animatedValue(.opacity, at: t - prev.item.startTime))
-        }
-        func inAlpha(_ t: Double) -> Float {
-            clamp01(cur.item.properties.animatedValue(.opacity, at: t - cur.item.startTime))
-        }
-
-        /// 某一时刻两层的 (不透明度, 变换)
         func state(at t: Double) -> (outAlpha: Float, inAlpha: Float,
                                      outTransform: CGAffineTransform,
                                      inTransform: CGAffineTransform) {
-            let p = min(1, max(0, (t - start) / max(0.001, duration)))
-            let outA = outAlpha(t)
-            let inA = inAlpha(t)
-            let outT = outScale(t)
-            let inT = inScale(t)
-
-            switch transition {
-            case .none:
-                return (outA, inA, outT, inT)
-            case .crossDissolve:
-                return (outA * Float(1 - p), inA * Float(p), outT, inT)
-            case .fadeThroughBlack:
-                if p < 0.5 {
-                    return (outA * Float(1 - p * 2), 0, outT, inT)
-                } else {
-                    return (0, inA * Float((p - 0.5) * 2), outT, inT)
-                }
-            case .slideLeft:
-                return (outA, inA,
-                        outT.concatenating(CGAffineTransform(translationX: -dx * CGFloat(p), y: 0)),
-                        inT.concatenating(CGAffineTransform(translationX: dx * CGFloat(1 - p), y: 0)))
-            case .zoomIn:
-                let zoom = 0.86 + 0.14 * p
-                return (outA * Float(1 - p), inA * Float(p),
-                        outT,
-                        inT.concatenating(scaleAbout(zoom, center: center)))
-            }
+            let s = transitionState(transition: transition, prev: prev, cur: cur,
+                                    renderSize: renderSize, start: start,
+                                    duration: duration, at: t)
+            return (Float(s.outAlpha), Float(s.inAlpha), s.outTransform, s.inTransform)
         }
 
         var previous = state(at: start)
@@ -1110,6 +1129,284 @@ enum CompositionBuilder {
                                      timeRange: range)
             previous = current
         }
+    }
+
+    // MARK: - 自绘合成器（圆角 / 描边）
+
+    /// 把已经铺好的系统指令逐条翻成自绘指令。
+    ///
+    /// 刻意复用系统的切分结果而不是自己重排一遍：指令边界、转场区间、
+    /// 空隙补黑这些规则在 makeVideoComposition 里已经调通了（踩过 -11841），
+    /// 重新铺一遍等于把那些坑再踩一次。这里只补「每层在这一段里的曲线」。
+    private static func makeCompositeInstructions(_ instructions: [AVMutableVideoCompositionInstruction],
+                                                  plans: [ClipPlan],
+                                                  videoTracks: [AVMutableCompositionTrack],
+                                                  overlays: [ClipPlan],
+                                                  overlayTracks: [AVMutableCompositionTrack],
+                                                  renderSize: CGSize) -> [CompositeInstruction] {
+        func plan(for trackID: CMPersistentTrackID,
+                  in list: [ClipPlan],
+                  tracks: [AVMutableCompositionTrack],
+                  lo: Double,
+                  hi: Double) -> ClipPlan? {
+            list.first { plan in
+                guard plan.trackSlot < tracks.count, tracks[plan.trackSlot].trackID == trackID else {
+                    return false
+                }
+                let a = plan.item.startTime
+                // 必须把 extraTail 算进来：转场时前一段会向后延 t 秒，
+                // 它的名义区间只到转场起点，不加延展量就会被判成「不相交」，
+                // 于是转场里只剩后一段——交叉淡入直接变成硬切。
+                let b = a + plan.timelineDuration + plan.extraTail
+                return b > lo + 0.0005 && a < hi - 0.0005
+            }
+        }
+
+        return instructions.map { instruction in
+            let lo = CMTimeGetSeconds(instruction.timeRange.start)
+            let hi = CMTimeGetSeconds(instruction.timeRange.end)
+
+            var mainPlans: [ClipPlan] = []
+            var overlayPlans: [ClipPlan] = []
+            for layer in instruction.layerInstructions {
+                let id = layer.trackID
+                guard id != kCMPersistentTrackID_Invalid else { continue }
+                if let p = plan(for: id, in: plans, tracks: videoTracks, lo: lo, hi: hi) {
+                    mainPlans.append(p)
+                } else if let p = plan(for: id, in: overlays, tracks: overlayTracks, lo: lo, hi: hi) {
+                    overlayPlans.append(p)
+                }
+                // 黑底轨在这里匹配不到任何 plan，直接丢掉——自绘路径的画布本来就是黑的
+            }
+
+            var layers: [RenderLayer] = []
+
+            // 画中画在最前面
+            for p in overlayPlans {
+                guard p.trackSlot < overlayTracks.count else { continue }
+                if let spec = overlayLayerSpec(plan: p,
+                                               track: overlayTracks[p.trackSlot],
+                                               renderSize: renderSize,
+                                               lo: lo,
+                                               hi: hi) {
+                    layers.append(spec)
+                }
+            }
+
+            if mainPlans.count >= 2 {
+                // 转场：两条主画面层
+                let prev = mainPlans[0]
+                let cur = mainPlans[1]
+                guard prev.trackSlot < videoTracks.count,
+                      cur.trackSlot < videoTracks.count else {
+                    return CompositeInstruction(timeRange: instruction.timeRange, layers: layers)
+                }
+                layers += transitionLayerSpecs(prev: prev,
+                                               prevTrack: videoTracks[prev.trackSlot],
+                                               cur: cur,
+                                               curTrack: videoTracks[cur.trackSlot],
+                                               renderSize: renderSize,
+                                               lo: lo,
+                                               hi: hi)
+            } else if let p = mainPlans.first, p.trackSlot < videoTracks.count {
+                if let spec = clipLayerSpec(plan: p,
+                                            track: videoTracks[p.trackSlot],
+                                            renderSize: renderSize,
+                                            lo: lo,
+                                            hi: hi) {
+                    layers.append(spec)
+                }
+            }
+
+            return CompositeInstruction(timeRange: instruction.timeRange, layers: layers)
+        }
+    }
+
+    /// 折点 → 采样点表：只留落在 (lo, hi) 里的，按时间升序，相邻太近的合并。
+    /// 两端必须正好是 lo / hi，否则合成器在指令边界上取不到值。
+    private static func sampleTimes(_ marks: [Double], lo: Double, hi: Double) -> [Double] {
+        guard hi > lo + 0.0005 else { return [lo] }
+        var out: [Double] = [lo]
+        for t in marks.sorted() where t.isFinite {
+            guard t > lo + 0.0005, t < hi - 0.0005 else { continue }
+            if let last = out.last, t - last < 0.0005 { continue }
+            out.append(t)
+        }
+        out.append(hi)
+        return out
+    }
+
+    /// 主画面单段的曲线。规则和 `layerInstruction` 一一对应：
+    /// 有关键帧时整段交给关键帧（淡入淡出不再叠加）、有入场转场时淡入交给转场。
+    private static func clipLayerSpec(plan: ClipPlan,
+                                      track: AVMutableCompositionTrack,
+                                      renderSize: CGSize,
+                                      lo: Double,
+                                      hi: Double) -> RenderLayer? {
+        guard hi > lo + 0.0005 else { return nil }
+        let a = plan.item.startTime
+        let span = max(0.05, plan.timelineDuration)
+        let b = a + span
+        let props = plan.item.properties
+        let half = span / 2
+        let fadeIn = plan.inTransition > 0 ? 0 : min(max(0, props.fadeIn), half)
+        let fadeOut = min(max(0, props.fadeOut), half)
+        let opacityKeyed = !props.keyframes(for: .opacity).isEmpty
+        let scaleKeyed = !props.keyframes(for: .scale).isEmpty
+        let fixed = baseTransform(plan: plan, renderSize: renderSize)
+
+        func opacity(at t: Double) -> Double {
+            let local = t - a
+            guard local >= -0.0005, local <= span + 0.0005 else { return 0 }
+            let l = min(max(local, 0), span)
+            if opacityKeyed { return min(max(props.animatedValue(.opacity, at: l), 0), 1) }
+            var value = min(max(props.opacity, 0), 1)
+            if fadeIn > 0.02, l < fadeIn { value *= l / fadeIn }
+            if fadeOut > 0.02, l > span - fadeOut { value *= (span - l) / fadeOut }
+            return max(0, value)
+        }
+
+        func transform(at t: Double) -> CGAffineTransform {
+            guard scaleKeyed else { return fixed }
+            let l = min(max(t - a, 0), span)
+            return baseTransform(plan: plan, renderSize: renderSize,
+                                 scaleOverride: props.animatedValue(.scale, at: l))
+        }
+
+        var marks: [Double] = [a, b]
+        if fadeIn > 0.02 { marks.append(a + fadeIn) }
+        if fadeOut > 0.02 { marks.append(b - fadeOut) }
+        if scaleKeyed {
+            marks += props.animationSamples(.scale, duration: span).map { a + $0.time }
+        }
+        if opacityKeyed {
+            marks += props.animationSamples(.opacity, duration: span).map { a + $0.time }
+        }
+
+        let samples = sampleTimes(marks, lo: lo, hi: hi).map {
+            (time: $0, opacity: opacity(at: $0), transform: transform(at: $0))
+        }
+        return RenderLayer(trackID: track.trackID, samples: samples)
+    }
+
+    /// 转场两层。曲线直接来自 `transitionState`，和系统合成器那份是同一个函数。
+    private static func transitionLayerSpecs(prev: ClipPlan,
+                                             prevTrack: AVMutableCompositionTrack,
+                                             cur: ClipPlan,
+                                             curTrack: AVMutableCompositionTrack,
+                                             renderSize: CGSize,
+                                             lo: Double,
+                                             hi: Double) -> [RenderLayer] {
+        let duration = hi - lo
+        guard duration > 0.0005 else { return [] }
+        let transition = cur.item.transition
+
+        func state(at t: Double) -> (outAlpha: Double, inAlpha: Double,
+                                     outTransform: CGAffineTransform,
+                                     inTransform: CGAffineTransform) {
+            transitionState(transition: transition,
+                            prev: prev, cur: cur,
+                            renderSize: renderSize,
+                            start: lo, duration: duration, at: t)
+        }
+
+        // 无关键帧时所有转场都是「两个端点线性插值」，两个采样点就够；
+        // 有关键帧才需要细分，粒度和 applySteppedTransition 的步长对齐
+        var marks: [Double] = [lo, hi]
+        if prev.item.properties.hasAnyKeyframes || cur.item.properties.hasAnyKeyframes {
+            let steps = max(6, min(48, Int((duration / 0.05).rounded())))
+            for i in 1..<steps {
+                marks.append(lo + duration * Double(i) / Double(steps))
+            }
+        }
+
+        let times = sampleTimes(marks, lo: lo, hi: hi)
+        let outSamples = times.map { t -> (time: Double, opacity: Double, transform: CGAffineTransform) in
+            let s = state(at: t)
+            return (t, s.outAlpha, s.outTransform)
+        }
+        let inSamples = times.map { t -> (time: Double, opacity: Double, transform: CGAffineTransform) in
+            let s = state(at: t)
+            return (t, s.inAlpha, s.inTransform)
+        }
+        // 层顺序和系统路径一致：前 → 后
+        return [RenderLayer(trackID: prevTrack.trackID, samples: outSamples),
+                RenderLayer(trackID: curTrack.trackID, samples: inSamples)]
+    }
+
+    /// 画中画的曲线，规则和 `applyOverlay` 一一对应（含区间外归零）。
+    private static func overlayLayerSpec(plan: ClipPlan,
+                                         track: AVMutableCompositionTrack,
+                                         renderSize: CGSize,
+                                         lo: Double,
+                                         hi: Double) -> RenderLayer? {
+        let a = plan.item.startTime
+        let b = a + plan.timelineDuration
+        guard b > a + 0.0005, hi > lo + 0.0005 else { return nil }
+
+        let props = plan.item.properties
+        let span = b - a
+        let half = span / 2
+        let fadeIn = min(max(0, props.fadeIn), half)
+        let fadeOut = min(max(0, props.fadeOut), half)
+        let opacityKeyed = !props.keyframes(for: .opacity).isEmpty
+        let scaleKeyed = !props.keyframes(for: .scale).isEmpty
+        let fixed = pipTransform(plan: plan, renderSize: renderSize)
+
+        func base(_ t: Double) -> Double {
+            let local = min(max(t - a, 0), span)
+            if opacityKeyed {
+                return min(max(props.animatedValue(.opacity, at: local), 0), 1)
+            }
+            let value = min(max(props.opacity, 0), 1)
+            var factor = 1.0
+            if fadeIn > 0.02, local < fadeIn { factor = min(factor, local / fadeIn) }
+            if fadeOut > 0.02, local > span - fadeOut {
+                factor = min(factor, (span - local) / fadeOut)
+            }
+            return value * max(0, factor)
+        }
+
+        func opacity(at t: Double) -> Double { (t < a || t > b) ? 0 : base(t) }
+
+        func transform(at t: Double) -> CGAffineTransform {
+            guard scaleKeyed else { return fixed }
+            let local = min(max(t - a, 0), span)
+            return pipTransform(plan: plan, renderSize: renderSize,
+                                widthRatioOverride: props.animatedValue(.scale, at: local))
+        }
+
+        var marks: [Double] = [a, b]
+        if fadeIn > 0.02 { marks.append(a + fadeIn) }
+        if fadeOut > 0.02 { marks.append(b - fadeOut) }
+        for frame in props.keyframes(for: .opacity) {
+            marks.append(min(max(a + frame.time, a), b))
+        }
+        for frame in props.keyframes(for: .scale) {
+            marks.append(min(max(a + frame.time, a), b))
+        }
+
+        let style = props.pip.sanitized
+        let samples = sampleTimes(marks, lo: lo, hi: hi).map {
+            (time: $0, opacity: opacity(at: $0), transform: transform(at: $0))
+        }
+
+        var layer = RenderLayer(trackID: track.trackID, samples: samples)
+        if style.hasDecoration {
+            layer.cornerRatio = style.cornerRadius
+            layer.borderRatio = style.borderWidth
+            layer.borderColor = Self.cgColor(hex: style.borderColorHex,
+                                             alpha: style.borderOpacity)
+        }
+        return layer
+    }
+
+    /// 0xRRGGBB + alpha → CGColor（sRGB，和字幕渲染保持一致）
+    static func cgColor(hex: Int, alpha: Double) -> CGColor {
+        CGColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
+                green: CGFloat((hex >> 8) & 0xFF) / 255,
+                blue: CGFloat(hex & 0xFF) / 255,
+                alpha: CGFloat(min(max(alpha, 0), 1)))
     }
 
     // MARK: - 变换
