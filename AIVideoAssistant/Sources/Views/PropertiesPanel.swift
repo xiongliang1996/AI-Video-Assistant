@@ -35,6 +35,7 @@ struct PropertiesPanel: View {
                         divider
                         if item.isOverlay {
                             pip(item)
+                            pipMotion(item)
                             pipAppearance(item)
                             divider
                         }
@@ -473,6 +474,82 @@ struct PropertiesPanel: View {
                 .foregroundStyle(Theme.text3)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 8)
+        }
+    }
+
+    /// 入场 / 出场动效。
+    ///
+    /// 动效是叠在「淡入淡出 + 关键帧」之上的一层乘数：已经打了缩放关键帧的
+    /// 画中画照样能加一个淡入放大，两者相乘。所以这里不碰关键帧面板。
+    private func pipMotion(_ item: TimelineItem) -> some View {
+        let style = item.properties.pip
+        let all = PiPMotionStyle.allCases
+
+        func apply(_ mutate: (inout PiPStyle) -> Void) {
+            var copy = item
+            mutate(&copy.properties.pip)
+            copy.properties.pip = copy.properties.pip.sanitized
+            appState.updateItem(copy, recordUndo: true)
+        }
+
+        func durationBinding(_ keyPath: WritableKeyPath<PiPStyle, Double>) -> Binding<Double> {
+            Binding(
+                get: { item.properties.pip[keyPath: keyPath] },
+                set: { newValue in apply { $0[keyPath: keyPath] = newValue } }
+            )
+        }
+
+        return VStack(alignment: .leading, spacing: 0) {
+            Text("动效")
+                .font(.system(size: 11.5))
+                .foregroundStyle(Theme.text2)
+                .padding(.top, 10)
+                .padding(.bottom, 5)
+
+            Text("入场")
+                .font(.system(size: 10))
+                .foregroundStyle(Theme.text3)
+                .padding(.bottom, 1)
+
+            chipGrid(all.map(\.label),
+                     activeIndex: all.firstIndex(of: style.enterMotion),
+                     columns: 3) { index in
+                apply { $0.enterMotion = all[index] }
+            }
+
+            if style.enterMotion.isActive {
+                SliderRow(label: "时长",
+                          value: durationBinding(\.enterDuration),
+                          range: PiPStyle.motionDurationRange,
+                          display: String(format: "%.2fs", style.enterDuration))
+                    .padding(.top, 4)
+            }
+
+            Text("出场")
+                .font(.system(size: 10))
+                .foregroundStyle(Theme.text3)
+                .padding(.top, 8)
+                .padding(.bottom, 1)
+
+            chipGrid(all.map(\.exitLabel),
+                     activeIndex: all.firstIndex(of: style.exitMotion),
+                     columns: 3) { index in
+                apply { $0.exitMotion = all[index] }
+            }
+
+            if style.exitMotion.isActive {
+                SliderRow(label: "时长",
+                          value: durationBinding(\.exitDuration),
+                          range: PiPStyle.motionDurationRange,
+                          display: String(format: "%.2fs", style.exitDuration))
+                    .padding(.top, 4)
+            }
+
+            Text("动效和淡入淡出、缩放关键帧相乘，不会互相覆盖；时长超过半个片段会自动收住。")
+                .font(.system(size: 10))
+                .foregroundStyle(Theme.text3)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 6)
         }
     }
 

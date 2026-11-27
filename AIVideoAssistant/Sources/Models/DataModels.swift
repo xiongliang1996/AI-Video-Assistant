@@ -612,6 +612,45 @@ struct NormalizedPoint: Codable, Hashable {
 
 /// 画中画的几何：只描述「多大、放哪儿」，不涉及素材本身。
 /// 数值都用占画幅的比例表示，换导出分辨率时不用重设。
+/// 画中画入场 / 出场动效。
+///
+/// 方向按「从哪儿来」命名（`fromLeft` = 从左边滑进来）。出场复用同一个枚举，
+/// 只是进度反向播放，所以文案另给一套（`exitLabel`：`fromLeft` → 「向左」）。
+///
+/// 存成枚举而不是自由参数：预设之间的差别是**曲线形状**（缩放起点、位移方向、
+/// 淡入速度），拆成三个独立滑杆让人自己凑，凑不出好看的组合还容易做出画面乱飞的片子。
+enum PiPMotionStyle: String, Codable, CaseIterable, Identifiable {
+    case none, fade, zoom, fromLeft, fromRight, fromBottom
+
+    var id: String { rawValue }
+
+    /// 入场文案
+    var label: String {
+        switch self {
+        case .none: return "无"
+        case .fade: return "淡入"
+        case .zoom: return "放大"
+        case .fromLeft: return "左侧"
+        case .fromRight: return "右侧"
+        case .fromBottom: return "下方"
+        }
+    }
+
+    /// 出场文案：同一方向反过来说
+    var exitLabel: String {
+        switch self {
+        case .none: return "无"
+        case .fade: return "淡出"
+        case .zoom: return "缩小"
+        case .fromLeft: return "向左"
+        case .fromRight: return "向右"
+        case .fromBottom: return "向下"
+        }
+    }
+
+    var isActive: Bool { self != .none }
+}
+
 struct PiPStyle: Codable, Hashable {
     /// 画中画宽度占画幅宽度的比例
     var widthRatio: Double = 0.32
@@ -651,6 +690,19 @@ struct PiPStyle: Codable, Hashable {
     /// 投影颜色（0xRRGGBB）。界面不暴露，固定黑，留着给以后扩展
     var shadowColorHex: Int = 0x000000
 
+    // MARK: 入场 / 出场动效
+    //
+    // 动效是叠在「淡入淡出 + 关键帧」之上的一层乘数，不是替换：
+    // 有缩放关键帧的画中画照样可以加一个淡入放大，两者相乘。
+    // 时长各自独立，渲染时会夹到半个片段内，两个动效不会撞在一起。
+
+    var enterMotion: PiPMotionStyle = .none
+    var enterDuration: Double = 0.6
+    var exitMotion: PiPMotionStyle = .none
+    var exitDuration: Double = 0.6
+
+    static let motionDurationRange: ClosedRange<Double> = 0.15...2.0
+
     /// 允许的范围，界面滑杆和引擎都按这个夹一次
     static let widthRange: ClosedRange<Double> = 0.1...0.75
     static let marginRange: ClosedRange<Double> = 0...0.12
@@ -683,6 +735,7 @@ struct PiPStyle: Codable, Hashable {
         case widthRatio, position, margin, freeOrigin
         case cornerRadius, borderWidth, borderColorHex, borderOpacity
         case shadowRadius, shadowOpacity, shadowOffset, shadowColorHex
+        case enterMotion, enterDuration, exitMotion, exitDuration
     }
 
     /// 旧项目文件没有这几个字段，缺了就按默认值
@@ -700,6 +753,10 @@ struct PiPStyle: Codable, Hashable {
         shadowOpacity = try c.decodeIfPresent(Double.self, forKey: .shadowOpacity) ?? 0.5
         shadowOffset = try c.decodeIfPresent(Double.self, forKey: .shadowOffset) ?? 0.045
         shadowColorHex = try c.decodeIfPresent(Int.self, forKey: .shadowColorHex) ?? 0x000000
+        enterMotion = try c.decodeIfPresent(PiPMotionStyle.self, forKey: .enterMotion) ?? .none
+        enterDuration = try c.decodeIfPresent(Double.self, forKey: .enterDuration) ?? 0.6
+        exitMotion = try c.decodeIfPresent(PiPMotionStyle.self, forKey: .exitMotion) ?? .none
+        exitDuration = try c.decodeIfPresent(Double.self, forKey: .exitDuration) ?? 0.6
     }
 
     /// 夹到合法区间，防止滑杆外的数值把 transform 算成 NaN 或飞出画幅
@@ -730,6 +787,12 @@ struct PiPStyle: Codable, Hashable {
         copy.shadowOffset = min(max(copy.shadowOffset, PiPStyle.shadowOffsetRange.lowerBound),
                                 PiPStyle.shadowOffsetRange.upperBound)
         copy.shadowColorHex &= 0xFFFFFF
+        if !copy.enterDuration.isFinite { copy.enterDuration = 0.6 }
+        if !copy.exitDuration.isFinite { copy.exitDuration = 0.6 }
+        copy.enterDuration = min(max(copy.enterDuration, PiPStyle.motionDurationRange.lowerBound),
+                                 PiPStyle.motionDurationRange.upperBound)
+        copy.exitDuration = min(max(copy.exitDuration, PiPStyle.motionDurationRange.lowerBound),
+                                PiPStyle.motionDurationRange.upperBound)
         if let f = copy.freeOrigin {
             let x = f.x.isFinite ? min(max(f.x, 0), 1) : 0
             let y = f.y.isFinite ? min(max(f.y, 0), 1) : 0
@@ -750,6 +813,12 @@ struct PiPStyle: Codable, Hashable {
     /// 投影是不是真的看得见
     var hasShadow: Bool {
         shadowRadius > 0.0005 && shadowOpacity > 0.005
+    }
+
+    /// 有没有入场 / 出场动效
+    var hasMotion: Bool {
+        (enterMotion.isActive && enterDuration > 0.001)
+            || (exitMotion.isActive && exitDuration > 0.001)
     }
 
     /// 圆角半径换算成像素：按短边算，超短边一半就按一半（正圆）
@@ -793,6 +862,9 @@ struct PiPStyle: Codable, Hashable {
         }
         if hasShadow {
             text += " · 投影"
+        }
+        if hasMotion {
+            text += " · 动效"
         }
         return text
     }

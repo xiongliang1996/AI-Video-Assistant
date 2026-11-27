@@ -905,10 +905,22 @@ enum CompositionBuilder {
     private static func pipTransform(plan: ClipPlan,
                                      renderSize: CGSize,
                                      widthRatioOverride: Double? = nil) -> CGAffineTransform {
+        pipGeometry(plan: plan, renderSize: renderSize,
+                    widthRatioOverride: widthRatioOverride).transform
+    }
+
+    /// 画中画的「最终矩形 + 变换」。
+    ///
+    /// 动效要绕矩形中心缩放、按矩形宽高换算位移，所以两个值必须一起出来：
+    /// 只拿变换的话，得从矩阵里反推中心点，遇到旋转就推不对了。
+    private static func pipGeometry(plan: ClipPlan,
+                                    renderSize: CGSize,
+                                    widthRatioOverride: Double? = nil) -> (transform: CGAffineTransform,
+                                                                          rect: CGRect) {
         let raw = CGRect(origin: .zero, size: plan.naturalSize).applying(plan.preferredTransform)
         let width = abs(raw.width)
         let height = abs(raw.height)
-        guard width > 1, height > 1 else { return .identity }
+        guard width > 1, height > 1 else { return (.identity, .zero) }
 
         var style = plan.item.properties.pip
         // 缩放（静态值或关键帧）当作画中画尺寸的倍率：
@@ -918,7 +930,7 @@ enum CompositionBuilder {
         let rect = pipRect(naturalSize: CGSize(width: width, height: height),
                            renderSize: renderSize,
                            style: style)
-        guard rect.width > 0.5 else { return .identity }
+        guard rect.width > 0.5 else { return (.identity, .zero) }
 
         let box = CGRect(x: raw.minX, y: raw.minY, width: width, height: height)
         let scale = rect.width / width
@@ -932,7 +944,7 @@ enum CompositionBuilder {
             transform = transform.concatenating(CGAffineTransform(rotationAngle: angle))
         }
         transform = transform.concatenating(CGAffineTransform(translationX: rect.midX, y: rect.midY))
-        return transform
+        return (transform, rect)
     }
 
     /// 给画中画图层铺「不透明度 + 变换」曲线，只覆盖 [lo, hi] 这一条指令。
@@ -959,25 +971,54 @@ enum CompositionBuilder {
         // 有关键帧时整段交给关键帧，淡入淡出不再叠加（和主画面片段规则一致）
         let opacityKeyed = !props.keyframes(for: .opacity).isEmpty
         let scaleKeyed = !props.keyframes(for: .scale).isEmpty
+        let style = props.pip.sanitized
+        let motionActive = style.hasMotion
+
+        /// 该时刻的入场 / 出场乘数
+        func motion(_ local: Double) -> PiPMotionFactors {
+            guard motionActive else { return PiPMotionFactors() }
+            return PiPMotion.combined(enter: style.enterMotion,
+                                      enterDuration: style.enterDuration,
+                                      exit: style.exitMotion,
+                                      exitDuration: style.exitDuration,
+                                      span: span,
+                                      at: local)
+        }
 
         /// 区间内某时刻的相对不透明度（不含「区间外为 0」这层）
         func base(_ t: Double) -> Double {
             let local = min(max(t - a, 0), span)
+            var value: Double
             if opacityKeyed {
-                return min(max(props.animatedValue(.opacity, at: local), 0), 1)
+                value = min(max(props.animatedValue(.opacity, at: local), 0), 1)
+            } else {
+                value = min(max(props.opacity, 0), 1)
+                var factor = 1.0
+                if fadeIn > 0.02, local < fadeIn { factor = min(factor, local / fadeIn) }
+                if fadeOut > 0.02, local > span - fadeOut {
+                    factor = min(factor, (span - local) / fadeOut)
+                }
+                value *= max(0, factor)
             }
-            let value = min(max(props.opacity, 0), 1)
-            var factor = 1.0
-            if fadeIn > 0.02, local < fadeIn { factor = min(factor, local / fadeIn) }
-            if fadeOut > 0.02, local > span - fadeOut { factor = min(factor, (span - local) / fadeOut) }
-            return value * max(0, factor)
+            // 动效是叠在淡入淡出 / 关键帧之上的一层乘数
+            return value * motion(local).opacity
+        }
+
+        /// 该时刻的变换（含缩放关键帧与动效）
+        func transform(_ t: Double) -> CGAffineTransform {
+            let local = min(max(t - a, 0), span)
+            let ratio = scaleKeyed ? props.animatedValue(.scale, at: local) : nil
+            let geometry = pipGeometry(plan: plan, renderSize: renderSize,
+                                       widthRatioOverride: ratio)
+            guard motionActive else { return geometry.transform }
+            return PiPMotion.apply(motion(local), to: geometry.transform, rect: geometry.rect)
         }
 
         func value(_ t: Double) -> Double {
             (t < a || t > b) ? 0 : base(t)
         }
 
-        // 折点：片段两端、淡入淡出边界、关键帧时间点
+        // 折点：片段两端、淡入淡出边界、关键帧时间点、动效窗口内的细分点
         var breaks: [Double] = [a, b]
         if fadeIn > 0.02 { breaks.append(a + fadeIn) }
         if fadeOut > 0.02 { breaks.append(b - fadeOut) }
@@ -986,6 +1027,13 @@ enum CompositionBuilder {
         }
         for frame in props.keyframes(for: .scale) {
             breaks.append(min(max(a + frame.time, a), b))
+        }
+        if motionActive {
+            for offset in PiPMotion.sampleOffsets(span: span,
+                                                  enterDuration: style.enterDuration,
+                                                  exitDuration: style.exitDuration) {
+                breaks.append(min(max(a + offset, a), b))
+            }
         }
 
         var samples: [Double] = [lo, hi]
@@ -1014,23 +1062,20 @@ enum CompositionBuilder {
             layer.setOpacity(0, at: cmt(b))
         }
 
-        // 变换：没有缩放关键帧时一个定值就够
-        if !scaleKeyed {
+        // 变换：没有缩放关键帧、也没有动效时一个定值就够
+        if !scaleKeyed && !motionActive {
             layer.setTransform(pipTransform(plan: plan, renderSize: renderSize), at: cmt(lo))
             return
         }
         var previous: CGAffineTransform?
         for index in 0..<samples.count {
             let t = samples[index]
-            let local = min(max(t - a, 0), span)
-            let transform = pipTransform(plan: plan,
-                                         renderSize: renderSize,
-                                         widthRatioOverride: props.animatedValue(.scale, at: local))
+            let current = transform(t)
             if index > 0, let from = previous,
                let range = timeRange(from: samples[index - 1], to: t) {
-                layer.setTransformRamp(fromStart: from, toEnd: transform, timeRange: range)
+                layer.setTransformRamp(fromStart: from, toEnd: current, timeRange: range)
             }
-            previous = transform
+            previous = current
         }
         if let first = previous, samples.count == 1 {
             layer.setTransform(first, at: cmt(lo))
@@ -1383,29 +1428,47 @@ enum CompositionBuilder {
         let fadeOut = min(max(0, props.fadeOut), half)
         let opacityKeyed = !props.keyframes(for: .opacity).isEmpty
         let scaleKeyed = !props.keyframes(for: .scale).isEmpty
+        let style = props.pip.sanitized
+        let motionActive = style.hasMotion
         let fixed = pipTransform(plan: plan, renderSize: renderSize)
+
+        func motion(_ local: Double) -> PiPMotionFactors {
+            guard motionActive else { return PiPMotionFactors() }
+            return PiPMotion.combined(enter: style.enterMotion,
+                                      enterDuration: style.enterDuration,
+                                      exit: style.exitMotion,
+                                      exitDuration: style.exitDuration,
+                                      span: span,
+                                      at: local)
+        }
 
         func base(_ t: Double) -> Double {
             let local = min(max(t - a, 0), span)
+            var value: Double
             if opacityKeyed {
-                return min(max(props.animatedValue(.opacity, at: local), 0), 1)
+                value = min(max(props.animatedValue(.opacity, at: local), 0), 1)
+            } else {
+                value = min(max(props.opacity, 0), 1)
+                var factor = 1.0
+                if fadeIn > 0.02, local < fadeIn { factor = min(factor, local / fadeIn) }
+                if fadeOut > 0.02, local > span - fadeOut {
+                    factor = min(factor, (span - local) / fadeOut)
+                }
+                value *= max(0, factor)
             }
-            let value = min(max(props.opacity, 0), 1)
-            var factor = 1.0
-            if fadeIn > 0.02, local < fadeIn { factor = min(factor, local / fadeIn) }
-            if fadeOut > 0.02, local > span - fadeOut {
-                factor = min(factor, (span - local) / fadeOut)
-            }
-            return value * max(0, factor)
+            return value * motion(local).opacity
         }
 
         func opacity(at t: Double) -> Double { (t < a || t > b) ? 0 : base(t) }
 
         func transform(at t: Double) -> CGAffineTransform {
-            guard scaleKeyed else { return fixed }
+            guard scaleKeyed || motionActive else { return fixed }
             let local = min(max(t - a, 0), span)
-            return pipTransform(plan: plan, renderSize: renderSize,
-                                widthRatioOverride: props.animatedValue(.scale, at: local))
+            let ratio = scaleKeyed ? props.animatedValue(.scale, at: local) : nil
+            let geometry = pipGeometry(plan: plan, renderSize: renderSize,
+                                       widthRatioOverride: ratio)
+            guard motionActive else { return geometry.transform }
+            return PiPMotion.apply(motion(local), to: geometry.transform, rect: geometry.rect)
         }
 
         var marks: [Double] = [a, b]
@@ -1417,8 +1480,14 @@ enum CompositionBuilder {
         for frame in props.keyframes(for: .scale) {
             marks.append(min(max(a + frame.time, a), b))
         }
+        if motionActive {
+            for offset in PiPMotion.sampleOffsets(span: span,
+                                                  enterDuration: style.enterDuration,
+                                                  exitDuration: style.exitDuration) {
+                marks.append(min(max(a + offset, a), b))
+            }
+        }
 
-        let style = props.pip.sanitized
         let samples = sampleTimes(marks, lo: lo, hi: hi).map {
             (time: $0, opacity: opacity(at: $0), transform: transform(at: $0))
         }
