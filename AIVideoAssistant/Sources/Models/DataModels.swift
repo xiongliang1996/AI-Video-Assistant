@@ -35,6 +35,8 @@ struct ExportSettings: Codable, Hashable {
     var quality: ExportQuality = .high
     /// 素材比例和画幅不一致时怎么办：留黑边还是裁切
     var fillMode: ExportFillMode = .fit
+    /// 导出前把整条混音拉到目标响度（LUFS）。关闭时完全不动音频
+    var loudness: LoudnessTarget = .off
 
     init() {}
 
@@ -42,12 +44,14 @@ struct ExportSettings: Codable, Hashable {
          fps: Int = 30,
          format: ExportFormat = .mp4,
          quality: ExportQuality = .high,
-         fillMode: ExportFillMode = .fit) {
+         fillMode: ExportFillMode = .fit,
+         loudness: LoudnessTarget = .off) {
         self.resolution = resolution
         self.fps = fps
         self.format = format
         self.quality = quality
         self.fillMode = fillMode
+        self.loudness = loudness
     }
 
     /// v1.17 及更早的项目文件没有 fillMode，缺字段时按「适应」处理
@@ -58,6 +62,7 @@ struct ExportSettings: Codable, Hashable {
         format = (try? container.decodeIfPresent(ExportFormat.self, forKey: .format)) ?? .mp4
         quality = (try? container.decodeIfPresent(ExportQuality.self, forKey: .quality)) ?? .high
         fillMode = (try? container.decodeIfPresent(ExportFillMode.self, forKey: .fillMode)) ?? .fit
+        loudness = (try? container.decodeIfPresent(LoudnessTarget.self, forKey: .loudness)) ?? .off
     }
 
     /// 给界面看的一行摘要

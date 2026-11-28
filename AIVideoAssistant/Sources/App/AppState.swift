@@ -1380,9 +1380,26 @@ final class AppState: ObservableObject {
 
     func applyExportPreset(_ preset: ExportPreset) {
         var project = currentProject
+        // 响度是每次导出临时决定的，切预设不该把它重置回「关闭」
+        let keepLoudness = project.settings.loudness
         project.settings = preset.settings
+        project.settings.loudness = keepLoudness
         currentProject = project
         notify("已切换到「\(preset.name)」· \(preset.summary)")
+    }
+
+    /// 测当前时间线的混音响度。只读，不改任何片段
+    func measureLoudness() async -> LoudnessMeter.Result? {
+        let items = timeline
+        guard !items.isEmpty else { return nil }
+        let settings = currentProject.settings
+        guard let build = try? await CompositionBuilder.build(items: items,
+                                                             renderSize: settings.resolution.size,
+                                                             fps: settings.fps,
+                                                             fillMode: settings.fillMode) else {
+            return nil
+        }
+        return try? await AudioMastering.measure(build: build)
     }
 
     /// 改单个参数（分辨率 / 帧率 / 画质 / 填充方式）都走这里，保证只有一处写入口

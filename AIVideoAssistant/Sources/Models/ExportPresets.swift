@@ -55,8 +55,13 @@ struct ExportPreset: Codable, Identifiable, Hashable {
     /// 竖屏 / 方形画幅给个角标提示
     var aspectLabel: String { resolution.aspectLabel }
 
+    /// 只比「画面参数」。响度是每次导出临时决定的，不该让预设失效
     func matches(_ settings: ExportSettings) -> Bool {
-        self.settings == settings
+        resolution == settings.resolution
+            && fps == settings.fps
+            && format == settings.format
+            && quality == settings.quality
+            && fillMode == settings.fillMode
     }
 }
 

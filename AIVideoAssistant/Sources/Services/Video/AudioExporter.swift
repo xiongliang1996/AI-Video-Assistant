@@ -16,8 +16,10 @@ private final class AudioSessionBox: @unchecked Sendable {
 
 enum AudioExporter {
     /// - Parameter items: 时间线快照。视频片段自带的音轨也会被混进去
+    /// - Parameter loudness: 响度标准化目标，只导出音频时同样生效
     static func export(items: [TimelineItem],
                        to outputURL: URL,
+                       loudness: LoudnessTarget = .off,
                        progress: @escaping (Double, String) -> Void) async throws {
         guard !items.isEmpty else { throw VideoError.emptyTimeline }
         // 只有字幕 / 文字时先拦下来，别让它一路走到「时间线为空」那种误导性报错
@@ -28,9 +30,24 @@ enum AudioExporter {
         await MainActor.run { progress(0.05, "正在合成音频…") }
 
         // 画面参数随便给：这一步只是为了让音轨的裁剪 / 变速 / 音量包络都算出来
-        let build = try await CompositionBuilder.build(items: items,
+        var build = try await CompositionBuilder.build(items: items,
                                                        renderSize: CGSize(width: 1280, height: 720),
                                                        fps: 30)
+
+        var tempAudio: URL?
+        if loudness != .off {
+            let result = try await AudioMastering.mastered(build: build, target: loudness) { value, message in
+                progress(0.05 + value * 0.5, message)
+            }
+            build = result.build
+            tempAudio = result.tempURL
+            if let report = result.report {
+                AppLog.info(.export, "响度标准化 · \(report.summary)")
+            }
+        }
+        defer {
+            if let tempAudio { try? FileManager.default.removeItem(at: tempAudio) }
+        }
 
         let tracks = (try? await build.composition.loadTracks(withMediaType: .audio)) ?? []
         guard !tracks.isEmpty else { throw VideoError.noAudioTrack }

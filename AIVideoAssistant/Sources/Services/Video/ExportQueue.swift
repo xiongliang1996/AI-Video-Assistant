@@ -192,6 +192,7 @@ final class ExportQueue: ObservableObject {
                 case .audio:
                     try await AudioExporter.export(items: payload.items,
                                                    to: next.outputURL,
+                                                   loudness: payload.settings.loudness,
                                                    progress: report)
                 }
                 await self.finish(next.id, state: .done, message: "导出完成")

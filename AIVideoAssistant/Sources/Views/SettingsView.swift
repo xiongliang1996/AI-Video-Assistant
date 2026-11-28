@@ -16,6 +16,9 @@ struct SettingsView: View {
     @State private var presetSheet = false
     /// 导出完成后自动打开成品
     @AppStorage(AppState.autoOpenExportKey) private var autoOpenExport = false
+    /// 响度测量的结果（只在本次设置窗口里有效，不落盘）
+    @State private var loudnessProbe: LoudnessMeter.Result?
+    @State private var probing = false
 
     /// initialTab 只用于预览 / 截图验证
     init(initialTab: Int = 0) {
@@ -51,7 +54,8 @@ struct SettingsView: View {
                 footer
             }
         }
-        .frame(width: 648, height: 470)
+        // 导出页多了响度一栏，470 高已经要滚动才看得全
+        .frame(width: 648, height: 600)
         .background(Theme.panel)
         .onAppear { draft = appState.aiConfig }
     }
@@ -302,6 +306,10 @@ struct SettingsView: View {
 
             Divider()
 
+            loudnessSection
+
+            Divider()
+
             Toggle(isOn: $autoOpenExport) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("导出完成后自动打开成品")
@@ -316,6 +324,60 @@ struct SettingsView: View {
             .controlSize(.small)
 
             note("「仅导出音频」在导出按钮旁边 / 文件菜单 ⌘⌥E：只出混好的 M4A，画面不渲染", icon: "waveform")
+        }
+    }
+
+    /// 响度：目标 + 一键测量
+    private var loudnessSection: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            formField("响度标准化") {
+                SegmentedControl(options: LoudnessTarget.allCases,
+                                 title: { $0.shortLabel },
+                                 selection: Binding(
+                                    get: { appState.currentProject.settings.loudness },
+                                    set: { value in
+                                        appState.updateExportSettings { $0.loudness = value }
+                                    }
+                                 ))
+            }
+
+            note(appState.currentProject.settings.loudness.note, icon: "waveform.badge.magnifyingglass")
+
+            HStack(spacing: 8) {
+                Button {
+                    guard !probing else { return }
+                    probing = true
+                    Task {
+                        let result = await appState.measureLoudness()
+                        await MainActor.run {
+                            loudnessProbe = result
+                            probing = false
+                        }
+                    }
+                } label: {
+                    Text(probing ? "测量中…" : "测量当前响度")
+                        .font(.system(size: 10.5))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(probing)
+
+                if let probe = loudnessProbe {
+                    Text("\(probe.integratedText) · 峰值 \(probe.truePeakText)")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(probe.isSilent ? Theme.text3 : Theme.text2)
+                    if let lufs = appState.currentProject.settings.loudness.lufs, !probe.isSilent {
+                        let decision = LoudnessMeter.gain(measured: probe, target: lufs)
+                        Text(String(format: "%+.1f dB", decision.gain))
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(decision.limitedByPeak ? Theme.warning : Theme.accent)
+                    }
+                } else if !probing {
+                    Text("先测一下，才知道要调多少")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Theme.text3)
+                }
+            }
         }
     }
 
