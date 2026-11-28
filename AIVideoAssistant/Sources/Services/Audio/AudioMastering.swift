@@ -72,6 +72,8 @@ enum AudioMastering {
         var denoise: SpectralDenoiser.Report?
         /// 均衡这一步的结果，没开均衡时是 nil
         var equalizer: Equalizer.Report?
+        /// 压缩这一步的结果，没开压缩时是 nil
+        var compressor: Compressor.Report?
 
         /// 一行摘要：−18.3 LUFS → −14.0（+4.3 dB）
         var summary: String {
@@ -81,6 +83,7 @@ enum AudioMastering {
                 var parts: [String] = []
                 if let equalizer { parts.append("均衡 · \(equalizer.summary)") }
                 if let denoise { parts.append("降噪 · \(denoise.summary)") }
+                if let compressor { parts.append("压缩 · \(compressor.summary)") }
                 return parts.isEmpty ? "未做处理" : parts.joined(separator: " ｜ ")
             }
             let sign = gain >= 0 ? "+" : "−"
@@ -120,10 +123,12 @@ enum AudioMastering {
                          denoise: DenoiseLevel = .off,
                          noiseSample: NoiseSample? = nil,
                          equalizer: EqualizerSettings = EqualizerSettings(),
+                         compressor: CompressorSettings = CompressorSettings(),
                          progress: @escaping (Double, String) -> Void) async throws
         -> (build: CompositionBuild, report: Report?, tempURL: URL?) {
 
-        guard target.lufs != nil || denoise.isActive || equalizer.isActive else {
+        guard target.lufs != nil || denoise.isActive
+                || equalizer.isActive || compressor.isActive else {
             return (build, nil, nil)
         }
 
@@ -140,6 +145,7 @@ enum AudioMastering {
         var samples = pcm.samples
         var denoiseReport: SpectralDenoiser.Report?
         var equalizerReport: Equalizer.Report?
+        var compressorReport: Compressor.Report?
 
         // 均衡排在降噪前面：低切先把 60–120 Hz 的隆隆声去掉，
         // 降噪不用再费劲估那一段的噪声谱；提升频段也会被降噪一并考虑进去
@@ -165,6 +171,16 @@ enum AudioMastering {
                                                    noiseRange: range)
             samples = outcome.samples
             denoiseReport = outcome.report
+        }
+
+        // 压缩排在降噪之后：先清掉底噪，否则补偿增益会把底噪一起抬起来。
+        // 又必须在测响度之前：压缩改变了动态范围，先测后压会让目标响度算偏
+        if compressor.isActive {
+            await MainActor.run { progress(0.09, "正在压缩动态…") }
+            compressorReport = Compressor.process(&samples,
+                                                  channels: pcm.channels,
+                                                  settings: compressor,
+                                                  sampleRate: pcm.sampleRate)
         }
 
         let measured = LoudnessMeter.measure(samples: samples,
@@ -197,10 +213,13 @@ enum AudioMastering {
                             target: target,
                             clippedSamples: clipped,
                             denoise: denoiseReport,
-                            equalizer: equalizerReport)
+                            equalizer: equalizerReport,
+                            compressor: compressorReport)
 
         // 前处理没跑成、响度也不需要动：原样返回，别白写一遍整条音轨
-        guard denoiseReport != nil || equalizerReport != nil || abs(gain) > 0 else {
+        let compressorChanged = compressorReport?.triggered == true
+        guard denoiseReport != nil || equalizerReport != nil
+                || compressorChanged || abs(gain) > 0 else {
             return (build, report, nil)
         }
 

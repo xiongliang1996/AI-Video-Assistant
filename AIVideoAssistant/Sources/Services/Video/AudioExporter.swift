@@ -20,12 +20,14 @@ enum AudioExporter {
     /// - Parameter denoise: 谱减降噪强度，同样作用在混好的整条音轨上
     /// - Parameter noiseSample: 手动框定的噪声区间，nil 时自动估计
     /// - Parameter equalizer: 三段均衡，作用在降噪之前
+    /// - Parameter compressor: 动态压缩，作用在降噪之后、测响度之前
     static func export(items: [TimelineItem],
                        to outputURL: URL,
                        loudness: LoudnessTarget = .off,
                        denoise: DenoiseLevel = .off,
                        noiseSample: NoiseSample? = nil,
                        equalizer: EqualizerSettings = EqualizerSettings(),
+                       compressor: CompressorSettings = CompressorSettings(),
                        progress: @escaping (Double, String) -> Void) async throws {
         guard !items.isEmpty else { throw VideoError.emptyTimeline }
         // 只有字幕 / 文字时先拦下来，别让它一路走到「时间线为空」那种误导性报错
@@ -41,12 +43,14 @@ enum AudioExporter {
                                                        fps: 30)
 
         var tempAudio: URL?
-        if loudness != .off || denoise != .off || equalizer.isActive {
+        if loudness != .off || denoise != .off
+            || equalizer.isActive || compressor.isActive {
             let result = try await AudioMastering.mastered(build: build,
                                                            target: loudness,
                                                            denoise: denoise,
                                                            noiseSample: noiseSample,
-                                                           equalizer: equalizer) { value, message in
+                                                           equalizer: equalizer,
+                                                           compressor: compressor) { value, message in
                 progress(0.05 + value * 0.5, message)
             }
             build = result.build
@@ -60,6 +64,9 @@ enum AudioExporter {
                 }
                 if let denoiseReport = report.denoise {
                     AppLog.info(.export, "降噪（\(denoiseReport.level.label)）· \(denoiseReport.summary)")
+                }
+                if let compressorReport = report.compressor {
+                    AppLog.info(.export, "压缩 · \(compressorReport.summary)")
                 }
             }
         }

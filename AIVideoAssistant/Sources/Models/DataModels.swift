@@ -72,6 +72,8 @@ struct ExportSettings: Codable, Hashable {
     var noiseSample: NoiseSample?
     /// 三段均衡（低切 / 中频 / 高架）。关闭时完全不动音频
     var equalizer = EqualizerSettings()
+    /// 动态压缩（门限 / 比率 / 自动补偿）。关闭时完全不动音频
+    var compressor = CompressorSettings()
 
     init() {}
 
@@ -83,7 +85,8 @@ struct ExportSettings: Codable, Hashable {
          loudness: LoudnessTarget = .off,
          denoise: DenoiseLevel = .off,
          noiseSample: NoiseSample? = nil,
-         equalizer: EqualizerSettings = EqualizerSettings()) {
+         equalizer: EqualizerSettings = EqualizerSettings(),
+         compressor: CompressorSettings = CompressorSettings()) {
         self.resolution = resolution
         self.fps = fps
         self.format = format
@@ -93,6 +96,7 @@ struct ExportSettings: Codable, Hashable {
         self.denoise = denoise
         self.noiseSample = noiseSample
         self.equalizer = equalizer
+        self.compressor = compressor
     }
 
     /// v1.17 及更早的项目文件没有 fillMode，缺字段时按「适应」处理
@@ -108,6 +112,8 @@ struct ExportSettings: Codable, Hashable {
         noiseSample = try? container.decodeIfPresent(NoiseSample.self, forKey: .noiseSample)
         equalizer = (try? container.decodeIfPresent(EqualizerSettings.self, forKey: .equalizer))
             ?? EqualizerSettings()
+        compressor = (try? container.decodeIfPresent(CompressorSettings.self, forKey: .compressor))
+            ?? CompressorSettings()
     }
 
     /// 给界面看的一行摘要

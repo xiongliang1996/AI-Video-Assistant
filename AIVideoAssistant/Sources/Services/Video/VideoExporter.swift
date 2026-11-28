@@ -39,14 +39,16 @@ final class VideoExporter {
                                                        fps: settings.fps,
                                                        fillMode: settings.fillMode)
 
-        // 均衡 + 降噪 + 响度标准化：改的是合成里的音频轨，两条导出路径都吃这一刀
+        // 均衡 + 降噪 + 压缩 + 响度标准化：改的是合成里的音频轨，两条导出路径都吃这一刀
         var tempAudio: URL?
-        if settings.loudness != .off || settings.denoise != .off || settings.equalizer.isActive {
+        if settings.loudness != .off || settings.denoise != .off
+            || settings.equalizer.isActive || settings.compressor.isActive {
             let result = try await AudioMastering.mastered(build: build,
                                                            target: settings.loudness,
                                                            denoise: settings.denoise,
                                                            noiseSample: settings.noiseSample,
-                                                           equalizer: settings.equalizer) { value, message in
+                                                           equalizer: settings.equalizer,
+                                                           compressor: settings.compressor) { value, message in
                 progress(0.05 + value * 0.6, message)
             }
             build = result.build
@@ -60,6 +62,9 @@ final class VideoExporter {
                 }
                 if let denoise = report.denoise {
                     AppLog.info(.export, "降噪（\(denoise.level.label)）· \(denoise.summary)")
+                }
+                if let compressor = report.compressor {
+                    AppLog.info(.export, "压缩 · \(compressor.summary)")
                 }
             }
         }

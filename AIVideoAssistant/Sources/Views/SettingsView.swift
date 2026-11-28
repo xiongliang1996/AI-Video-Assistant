@@ -54,9 +54,9 @@ struct SettingsView: View {
                 footer
             }
         }
-        // 导出页现在有均衡、降噪（含噪声取样）、响度三栏，708 高时底部
-        // 「自动打开」那行会被裁掉，放到 880。小屏上内容区仍然可滚动
-        .frame(width: 648, height: 880)
+        // 导出页有均衡、降噪（含噪声取样）、压缩、响度四栏。滑杆两两并排之后
+        // 整页刚好放得下 1000 高；更小的屏幕内容区仍然可以滚
+        .frame(width: 648, height: 1000)
         .background(Theme.panel)
         .onAppear { draft = appState.aiConfig }
     }
@@ -311,6 +311,8 @@ struct SettingsView: View {
 
             denoiseSection
 
+            compressorSection
+
             loudnessSection
 
             Divider()
@@ -363,15 +365,19 @@ struct SettingsView: View {
                                      ))
                 }
 
-                SliderRow(label: "中频",
-                          value: gainBinding(\.midGainDB),
-                          range: EqualizerSettings.gainRange,
-                          display: EqualizerSettings.signed(eq.midGainDB))
+                // 中频和高架并成一行：导出页已经有五栏，一行一对滑杆能省下
+                // 一整个 SliderRow 的高度，让整页在一屏内放得下
+                HStack(spacing: 14) {
+                    SliderRow(label: "中频",
+                              value: gainBinding(\.midGainDB),
+                              range: EqualizerSettings.gainRange,
+                              display: EqualizerSettings.signed(eq.midGainDB))
 
-                SliderRow(label: "高架",
-                          value: gainBinding(\.highGainDB),
-                          range: EqualizerSettings.gainRange,
-                          display: EqualizerSettings.signed(eq.highGainDB))
+                    SliderRow(label: "高架",
+                              value: gainBinding(\.highGainDB),
+                              range: EqualizerSettings.gainRange,
+                              display: EqualizerSettings.signed(eq.highGainDB))
+                }
 
                 note(eq.isActive
                      ? "\(eq.summary) · 排在降噪之前，提升的频段会被降噪一并考虑"
@@ -390,6 +396,65 @@ struct SettingsView: View {
                 let clamped = min(max(rounded, EqualizerSettings.gainRange.lowerBound),
                                   EqualizerSettings.gainRange.upperBound)
                 appState.updateExportSettings { $0.equalizer[keyPath: keyPath] = clamped }
+            }
+        )
+    }
+
+    /// 压缩：开关 + 门限 / 比率两个滑杆。补偿量自动算，不暴露
+    private var compressorSection: some View {
+        let comp = appState.currentProject.settings.compressor
+        return VStack(alignment: .leading, spacing: 7) {
+            formField("压缩") {
+                Toggle(isOn: Binding(
+                    get: { appState.currentProject.settings.compressor.enabled },
+                    set: { value in
+                        appState.updateExportSettings { $0.compressor.enabled = value }
+                    }
+                )) {
+                    Text("动态压缩（压平忽大忽小）")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Theme.text2)
+                }
+                .toggleStyle(.switch)
+                .controlSize(.small)
+            }
+
+            if comp.enabled {
+                // 门限与比率并成一行，理由同上
+                HStack(spacing: 14) {
+                    SliderRow(label: "门限",
+                              value: compressorBinding(\.thresholdDB,
+                                                       step: 1,
+                                                       range: CompressorSettings.thresholdRange),
+                              range: CompressorSettings.thresholdRange,
+                              display: "\(CompressorSettings.signed(comp.thresholdDB, decimals: 0)) dB")
+
+                    SliderRow(label: "比率",
+                              value: compressorBinding(\.ratio,
+                                                       step: 0.5,
+                                                       range: CompressorSettings.ratioRange),
+                              range: CompressorSettings.ratioRange,
+                              display: String(format: "%.1f:1", comp.ratio))
+                }
+
+                note(comp.isActive
+                     ? "\(comp.summary) · 补偿量按「平均压下去多少」自动补回，响度标准化仍然独立生效"
+                     : "比率在 1.0 上等于不压。门限越低压得越少，比率越大压得越狠",
+                     icon: "waveform.path")
+            }
+        }
+    }
+
+    /// 压缩参数滑杆：按步长吸附后夹回合法范围
+    private func compressorBinding(_ keyPath: WritableKeyPath<CompressorSettings, Double>,
+                                   step: Double,
+                                   range: ClosedRange<Double>) -> Binding<Double> {
+        Binding(
+            get: { appState.currentProject.settings.compressor[keyPath: keyPath] },
+            set: { value in
+                let rounded = (value / step).rounded() * step
+                let clamped = min(max(rounded, range.lowerBound), range.upperBound)
+                appState.updateExportSettings { $0.compressor[keyPath: keyPath] = clamped }
             }
         )
     }
