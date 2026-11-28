@@ -68,10 +68,16 @@ enum AudioMastering {
         var limitedByPeak: Bool
         var target: LoudnessTarget
         var clippedSamples: Int
+        /// 降噪这一步的结果，没开降噪时是 nil
+        var denoise: SpectralDenoiser.Report?
 
         /// 一行摘要：−18.3 LUFS → −14.0（+4.3 dB）
         var summary: String {
             guard !measured.isSilent else { return "整段接近静音，未做标准化" }
+            // 只降噪、不调响度时别显示「→ 同一个数」
+            guard target.lufs != nil else {
+                return denoise.map { "降噪 · \($0.summary)" } ?? "未做处理"
+            }
             let sign = gain >= 0 ? "+" : "−"
             let text = String(format: "%.1f LUFS → %.1f LUFS（%@%.1f dB）",
                               measured.integrated,
@@ -104,12 +110,15 @@ enum AudioMastering {
     /// - Returns: 新合成（音频轨已被替换）+ 报告 + 临时 WAV 地址（调用方负责删）
     static func mastered(build: CompositionBuild,
                          target: LoudnessTarget,
+                         denoise: DenoiseLevel = .off,
                          progress: @escaping (Double, String) -> Void) async throws
         -> (build: CompositionBuild, report: Report?, tempURL: URL?) {
 
-        guard let lufs = target.lufs else { return (build, nil, nil) }
+        guard target.lufs != nil || denoise.isActive else { return (build, nil, nil) }
 
-        await MainActor.run { progress(0.06, "正在分析响度…") }
+        await MainActor.run {
+            progress(0.06, denoise.isActive ? "正在分析噪声…" : "正在分析响度…")
+        }
 
         guard let pcm = try await renderPCM(composition: build.composition,
                                             audioMix: build.audioMix) else {
@@ -118,31 +127,54 @@ enum AudioMastering {
         }
 
         var samples = pcm.samples
+        var denoiseReport: SpectralDenoiser.Report?
+
+        // 降噪必须在测响度之前：降噪会削掉一部分能量，
+        // 先测后降会让最终响度整体偏高（目标 −14 出成 −12）
+        if denoise.isActive {
+            await MainActor.run { progress(0.08, "正在降噪…") }
+            let outcome = SpectralDenoiser.denoise(samples: samples,
+                                                   channels: pcm.channels,
+                                                   level: denoise)
+            samples = outcome.samples
+            denoiseReport = outcome.report
+        }
+
         let measured = LoudnessMeter.measure(samples: samples,
                                              sampleRate: pcm.sampleRate,
                                              channels: pcm.channels)
 
+        var gain = 0.0
+        var limitedByPeak = false
+        var clipped = 0
+
         // 全静音不折腾：增益只会把噪声底抬起来
-        guard !measured.isSilent else {
-            return (build, Report(measured: measured, gain: 0, limitedByPeak: false,
-                                  target: target, clippedSamples: 0), nil)
+        if let lufs = target.lufs, !measured.isSilent {
+            let decision = LoudnessMeter.gain(measured: measured,
+                                              target: lufs,
+                                              peakCeiling: peakCeiling)
+            // 小于 0.05 dB 就别动了，省一次全片重写
+            if abs(decision.gain) >= 0.05 {
+                await MainActor.run { progress(0.12, "正在调整响度…") }
+                clipped = LoudnessMeter.applyGain(&samples,
+                                                  gainDB: decision.gain,
+                                                  ceilingDB: peakCeiling)
+                gain = decision.gain
+                limitedByPeak = decision.limitedByPeak
+            }
         }
 
-        let decision = LoudnessMeter.gain(measured: measured,
-                                          target: lufs,
-                                          peakCeiling: peakCeiling)
+        let report = Report(measured: measured,
+                            gain: gain,
+                            limitedByPeak: limitedByPeak,
+                            target: target,
+                            clippedSamples: clipped,
+                            denoise: denoiseReport)
 
-        // 小于 0.05 dB 就别动了，省一次全片重写
-        if abs(decision.gain) < 0.05 {
-            return (build, Report(measured: measured, gain: 0, limitedByPeak: false,
-                                  target: target, clippedSamples: 0), nil)
+        // 降噪没跑成、响度也不需要动：原样返回，别白写一遍整条音轨
+        guard denoiseReport != nil || abs(gain) > 0 else {
+            return (build, report, nil)
         }
-
-        await MainActor.run { progress(0.12, "正在调整响度…") }
-
-        let clipped = LoudnessMeter.applyGain(&samples,
-                                              gainDB: decision.gain,
-                                              ceilingDB: peakCeiling)
 
         let temp = FileManager.default.temporaryDirectory
             .appendingPathComponent("aiva-master-\(UUID().uuidString).wav")
@@ -159,12 +191,6 @@ enum AudioMastering {
                                        // 音量包络已经烘进 PCM，再挂一次会叠两遍
                                        audioMix: nil,
                                        duration: build.duration)
-
-        let report = Report(measured: measured,
-                            gain: decision.gain,
-                            limitedByPeak: decision.limitedByPeak,
-                            target: target,
-                            clippedSamples: clipped)
         return (rebuilt, report, temp)
     }
 

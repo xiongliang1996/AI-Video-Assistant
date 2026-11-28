@@ -39,17 +39,23 @@ final class VideoExporter {
                                                        fps: settings.fps,
                                                        fillMode: settings.fillMode)
 
-        // 响度标准化：改的是合成里的音频轨，两条导出路径都吃这一刀
+        // 降噪 + 响度标准化：改的是合成里的音频轨，两条导出路径都吃这一刀
         var tempAudio: URL?
-        if settings.loudness != .off {
+        if settings.loudness != .off || settings.denoise != .off {
             let result = try await AudioMastering.mastered(build: build,
-                                                           target: settings.loudness) { value, message in
+                                                           target: settings.loudness,
+                                                           denoise: settings.denoise) { value, message in
                 progress(0.05 + value * 0.6, message)
             }
             build = result.build
             tempAudio = result.tempURL
             if let report = result.report {
-                AppLog.info(.export, "响度标准化 · \(report.summary)")
+                if settings.loudness != .off {
+                    AppLog.info(.export, "响度标准化 · \(report.summary)")
+                }
+                if let denoise = report.denoise {
+                    AppLog.info(.export, "降噪（\(denoise.level.label)）· \(denoise.summary)")
+                }
             }
         }
         defer {

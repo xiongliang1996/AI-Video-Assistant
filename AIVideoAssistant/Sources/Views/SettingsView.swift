@@ -54,8 +54,8 @@ struct SettingsView: View {
                 footer
             }
         }
-        // 导出页多了响度一栏，470 高已经要滚动才看得全
-        .frame(width: 648, height: 600)
+        // 导出页有降噪与响度两栏，600 高已经要滚动才看得全
+        .frame(width: 648, height: 668)
         .background(Theme.panel)
         .onAppear { draft = appState.aiConfig }
     }
@@ -306,6 +306,8 @@ struct SettingsView: View {
 
             Divider()
 
+            denoiseSection
+
             loudnessSection
 
             Divider()
@@ -324,6 +326,28 @@ struct SettingsView: View {
             .controlSize(.small)
 
             note("「仅导出音频」在导出按钮旁边 / 文件菜单 ⌘⌥E：只出混好的 M4A，画面不渲染", icon: "waveform")
+        }
+    }
+
+    /// 降噪：强度档位 + 一句说明
+    private var denoiseSection: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            formField("降噪") {
+                SegmentedControl(options: DenoiseLevel.allCases,
+                                 title: { $0.shortLabel },
+                                 selection: Binding(
+                                    get: { appState.currentProject.settings.denoise },
+                                    set: { value in
+                                        appState.updateExportSettings { $0.denoise = value }
+                                    }
+                                 ))
+            }
+
+            note(appState.currentProject.settings.denoise.note, icon: "waveform.badge.minus")
+
+            if appState.currentProject.settings.denoise.isActive {
+                note("噪声谱取整段最安静的 20%，导出时会多花一点时间重写整条音轨", icon: "clock")
+            }
         }
     }
 

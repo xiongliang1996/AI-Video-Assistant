@@ -1380,10 +1380,12 @@ final class AppState: ObservableObject {
 
     func applyExportPreset(_ preset: ExportPreset) {
         var project = currentProject
-        // 响度是每次导出临时决定的，切预设不该把它重置回「关闭」
+        // 响度与降噪是每次导出临时决定的，切预设不该把它们重置回「关闭」
         let keepLoudness = project.settings.loudness
+        let keepDenoise = project.settings.denoise
         project.settings = preset.settings
         project.settings.loudness = keepLoudness
+        project.settings.denoise = keepDenoise
         currentProject = project
         notify("已切换到「\(preset.name)」· \(preset.summary)")
     }

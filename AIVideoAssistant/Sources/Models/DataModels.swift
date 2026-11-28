@@ -37,6 +37,8 @@ struct ExportSettings: Codable, Hashable {
     var fillMode: ExportFillMode = .fit
     /// 导出前把整条混音拉到目标响度（LUFS）。关闭时完全不动音频
     var loudness: LoudnessTarget = .off
+    /// 导出前的谱减降噪强度。关闭时完全不动音频
+    var denoise: DenoiseLevel = .off
 
     init() {}
 
@@ -45,13 +47,15 @@ struct ExportSettings: Codable, Hashable {
          format: ExportFormat = .mp4,
          quality: ExportQuality = .high,
          fillMode: ExportFillMode = .fit,
-         loudness: LoudnessTarget = .off) {
+         loudness: LoudnessTarget = .off,
+         denoise: DenoiseLevel = .off) {
         self.resolution = resolution
         self.fps = fps
         self.format = format
         self.quality = quality
         self.fillMode = fillMode
         self.loudness = loudness
+        self.denoise = denoise
     }
 
     /// v1.17 及更早的项目文件没有 fillMode，缺字段时按「适应」处理
@@ -63,6 +67,7 @@ struct ExportSettings: Codable, Hashable {
         quality = (try? container.decodeIfPresent(ExportQuality.self, forKey: .quality)) ?? .high
         fillMode = (try? container.decodeIfPresent(ExportFillMode.self, forKey: .fillMode)) ?? .fit
         loudness = (try? container.decodeIfPresent(LoudnessTarget.self, forKey: .loudness)) ?? .off
+        denoise = (try? container.decodeIfPresent(DenoiseLevel.self, forKey: .denoise)) ?? .off
     }
 
     /// 给界面看的一行摘要
