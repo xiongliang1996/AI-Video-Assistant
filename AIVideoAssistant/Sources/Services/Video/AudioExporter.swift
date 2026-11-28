@@ -19,11 +19,13 @@ enum AudioExporter {
     /// - Parameter loudness: 响度标准化目标，只导出音频时同样生效
     /// - Parameter denoise: 谱减降噪强度，同样作用在混好的整条音轨上
     /// - Parameter noiseSample: 手动框定的噪声区间，nil 时自动估计
+    /// - Parameter equalizer: 三段均衡，作用在降噪之前
     static func export(items: [TimelineItem],
                        to outputURL: URL,
                        loudness: LoudnessTarget = .off,
                        denoise: DenoiseLevel = .off,
                        noiseSample: NoiseSample? = nil,
+                       equalizer: EqualizerSettings = EqualizerSettings(),
                        progress: @escaping (Double, String) -> Void) async throws {
         guard !items.isEmpty else { throw VideoError.emptyTimeline }
         // 只有字幕 / 文字时先拦下来，别让它一路走到「时间线为空」那种误导性报错
@@ -39,11 +41,12 @@ enum AudioExporter {
                                                        fps: 30)
 
         var tempAudio: URL?
-        if loudness != .off || denoise != .off {
+        if loudness != .off || denoise != .off || equalizer.isActive {
             let result = try await AudioMastering.mastered(build: build,
                                                            target: loudness,
                                                            denoise: denoise,
-                                                           noiseSample: noiseSample) { value, message in
+                                                           noiseSample: noiseSample,
+                                                           equalizer: equalizer) { value, message in
                 progress(0.05 + value * 0.5, message)
             }
             build = result.build
@@ -51,6 +54,9 @@ enum AudioExporter {
             if let report = result.report {
                 if loudness != .off {
                     AppLog.info(.export, "响度标准化 · \(report.summary)")
+                }
+                if let equalizerReport = report.equalizer {
+                    AppLog.info(.export, "均衡 · \(equalizerReport.summary)")
                 }
                 if let denoiseReport = report.denoise {
                     AppLog.info(.export, "降噪（\(denoiseReport.level.label)）· \(denoiseReport.summary)")

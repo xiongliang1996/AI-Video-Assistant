@@ -54,9 +54,9 @@ struct SettingsView: View {
                 footer
             }
         }
-        // 导出页有降噪（含噪声取样）、响度两栏，668 高时底部「自动打开」那行
-        // 会被裁掉一半，加 40pt 让整页一屏能看全
-        .frame(width: 648, height: 708)
+        // 导出页现在有均衡、降噪（含噪声取样）、响度三栏，708 高时底部
+        // 「自动打开」那行会被裁掉，放到 880。小屏上内容区仍然可滚动
+        .frame(width: 648, height: 880)
         .background(Theme.panel)
         .onAppear { draft = appState.aiConfig }
     }
@@ -307,6 +307,8 @@ struct SettingsView: View {
 
             Divider()
 
+            equalizerSection
+
             denoiseSection
 
             loudnessSection
@@ -328,6 +330,68 @@ struct SettingsView: View {
 
             note("「仅导出音频」在导出按钮旁边 / 文件菜单 ⌘⌥E：只出混好的 M4A，画面不渲染", icon: "waveform")
         }
+    }
+
+    /// 三段均衡：低切档位 + 中频 / 高架两个滑杆
+    private var equalizerSection: some View {
+        let eq = appState.currentProject.settings.equalizer
+        return VStack(alignment: .leading, spacing: 7) {
+            formField("均衡") {
+                Toggle(isOn: Binding(
+                    get: { appState.currentProject.settings.equalizer.enabled },
+                    set: { value in
+                        appState.updateExportSettings { $0.equalizer.enabled = value }
+                    }
+                )) {
+                    Text("三段均衡（低切 / 中频 / 高架）")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Theme.text2)
+                }
+                .toggleStyle(.switch)
+                .controlSize(.small)
+            }
+
+            if eq.enabled {
+                formField("低切") {
+                    SegmentedControl(options: EqualizerSettings.lowCutOptions,
+                                     title: { $0 <= 0 ? "关闭" : String(format: "%.0f", $0) },
+                                     selection: Binding(
+                                        get: { appState.currentProject.settings.equalizer.lowCutHz },
+                                        set: { value in
+                                            appState.updateExportSettings { $0.equalizer.lowCutHz = value }
+                                        }
+                                     ))
+                }
+
+                SliderRow(label: "中频",
+                          value: gainBinding(\.midGainDB),
+                          range: EqualizerSettings.gainRange,
+                          display: EqualizerSettings.signed(eq.midGainDB))
+
+                SliderRow(label: "高架",
+                          value: gainBinding(\.highGainDB),
+                          range: EqualizerSettings.gainRange,
+                          display: EqualizerSettings.signed(eq.highGainDB))
+
+                note(eq.isActive
+                     ? "\(eq.summary) · 排在降噪之前，提升的频段会被降噪一并考虑"
+                     : "参数都在 0 上，等于没开。低切去掉 60–120 Hz 的隆隆声，中频提 2 kHz 左右字更清楚",
+                     icon: "slider.horizontal.3")
+            }
+        }
+    }
+
+    /// 增益滑杆：0.5 dB 一档，两端夹回合法范围
+    private func gainBinding(_ keyPath: WritableKeyPath<EqualizerSettings, Double>) -> Binding<Double> {
+        Binding(
+            get: { appState.currentProject.settings.equalizer[keyPath: keyPath] },
+            set: { value in
+                let rounded = (value * 2).rounded() / 2
+                let clamped = min(max(rounded, EqualizerSettings.gainRange.lowerBound),
+                                  EqualizerSettings.gainRange.upperBound)
+                appState.updateExportSettings { $0.equalizer[keyPath: keyPath] = clamped }
+            }
+        )
     }
 
     /// 降噪：强度档位 + 一句说明

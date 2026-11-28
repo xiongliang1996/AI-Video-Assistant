@@ -70,6 +70,8 @@ struct ExportSettings: Codable, Hashable {
     var denoise: DenoiseLevel = .off
     /// 手动框定的噪声取样区间。nil 表示自动估计（整段最安静的 20%）
     var noiseSample: NoiseSample?
+    /// 三段均衡（低切 / 中频 / 高架）。关闭时完全不动音频
+    var equalizer = EqualizerSettings()
 
     init() {}
 
@@ -80,7 +82,8 @@ struct ExportSettings: Codable, Hashable {
          fillMode: ExportFillMode = .fit,
          loudness: LoudnessTarget = .off,
          denoise: DenoiseLevel = .off,
-         noiseSample: NoiseSample? = nil) {
+         noiseSample: NoiseSample? = nil,
+         equalizer: EqualizerSettings = EqualizerSettings()) {
         self.resolution = resolution
         self.fps = fps
         self.format = format
@@ -89,6 +92,7 @@ struct ExportSettings: Codable, Hashable {
         self.loudness = loudness
         self.denoise = denoise
         self.noiseSample = noiseSample
+        self.equalizer = equalizer
     }
 
     /// v1.17 及更早的项目文件没有 fillMode，缺字段时按「适应」处理
@@ -102,6 +106,8 @@ struct ExportSettings: Codable, Hashable {
         loudness = (try? container.decodeIfPresent(LoudnessTarget.self, forKey: .loudness)) ?? .off
         denoise = (try? container.decodeIfPresent(DenoiseLevel.self, forKey: .denoise)) ?? .off
         noiseSample = try? container.decodeIfPresent(NoiseSample.self, forKey: .noiseSample)
+        equalizer = (try? container.decodeIfPresent(EqualizerSettings.self, forKey: .equalizer))
+            ?? EqualizerSettings()
     }
 
     /// 给界面看的一行摘要
