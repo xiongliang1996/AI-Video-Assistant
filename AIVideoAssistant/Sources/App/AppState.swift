@@ -1411,6 +1411,51 @@ final class AppState: ObservableObject {
         currentProject = project
     }
 
+    // MARK: - 手动框选噪声段
+
+    /// 时间线上正在框噪声段。开启时标尺的拖拽从「拖播放头」变成「拉选区」
+    @Published var noisePickMode = false
+    /// 拖拽过程中的预览区间，松手前不写进项目
+    @Published var noiseDraft: NoiseSample?
+
+    var currentNoiseSample: NoiseSample? { currentProject.settings.noiseSample }
+
+    /// 设置面板是 sheet，挡着时间线，所以进来先把它关掉
+    func beginNoisePick() {
+        showingSettings = false
+        noiseDraft = nil
+        noisePickMode = true
+        notify("在时间线标尺上拖出一段纯噪声")
+    }
+
+    func cancelNoisePick() {
+        noisePickMode = false
+        noiseDraft = nil
+    }
+
+    /// 松手时提交。区间太短或越界就提示重来，不静默失败
+    func commitNoisePick(start: Double, end: Double) {
+        defer { noiseDraft = nil }
+        let lo = min(start, end)
+        let hi = max(start, end)
+        let raw = NoiseSample(start: lo, end: hi)
+
+        guard let clamped = raw.clamped(to: totalDuration) else {
+            notify(String(format: "选区太短（至少 %.2f 秒），请重新框选",
+                          NoiseSample.minimumDuration))
+            return
+        }
+
+        updateExportSettings { $0.noiseSample = clamped }
+        noisePickMode = false
+        notify("噪声取样已设为 \(clamped.summary)")
+    }
+
+    func clearNoiseSample() {
+        updateExportSettings { $0.noiseSample = nil }
+        notify("已恢复自动估计噪声谱")
+    }
+
     /// 把当前设置存成自定义预设，返回最终用的名字（重名会自动加序号）
     @discardableResult
     func saveExportPreset(named raw: String) -> String {

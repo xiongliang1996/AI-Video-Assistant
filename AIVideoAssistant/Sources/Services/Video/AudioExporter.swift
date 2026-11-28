@@ -18,10 +18,12 @@ enum AudioExporter {
     /// - Parameter items: 时间线快照。视频片段自带的音轨也会被混进去
     /// - Parameter loudness: 响度标准化目标，只导出音频时同样生效
     /// - Parameter denoise: 谱减降噪强度，同样作用在混好的整条音轨上
+    /// - Parameter noiseSample: 手动框定的噪声区间，nil 时自动估计
     static func export(items: [TimelineItem],
                        to outputURL: URL,
                        loudness: LoudnessTarget = .off,
                        denoise: DenoiseLevel = .off,
+                       noiseSample: NoiseSample? = nil,
                        progress: @escaping (Double, String) -> Void) async throws {
         guard !items.isEmpty else { throw VideoError.emptyTimeline }
         // 只有字幕 / 文字时先拦下来，别让它一路走到「时间线为空」那种误导性报错
@@ -40,7 +42,8 @@ enum AudioExporter {
         if loudness != .off || denoise != .off {
             let result = try await AudioMastering.mastered(build: build,
                                                            target: loudness,
-                                                           denoise: denoise) { value, message in
+                                                           denoise: denoise,
+                                                           noiseSample: noiseSample) { value, message in
                 progress(0.05 + value * 0.5, message)
             }
             build = result.build

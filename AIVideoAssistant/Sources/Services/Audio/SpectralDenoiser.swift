@@ -99,11 +99,28 @@ enum SpectralDenoiser {
         /// 估噪声谱时实际算了几帧
         var sampledFrames: Int
         var level: DenoiseLevel
+        /// 噪声谱来自哪里：自动分位数还是手动选区
+        var noiseSource: NoiseSource = .auto
 
         var summary: String {
             guard noiseFloorDB.isFinite else { return "没有可估的噪声底，未处理" }
-            return String(format: "噪声底 %.1f dBFS · 整体衰减 %.1f dB",
-                          noiseFloorDB, max(0, reductionDB))
+            let base = String(format: "噪声底 %.1f dBFS · 整体衰减 %.1f dB",
+                              noiseFloorDB, max(0, reductionDB))
+            return noiseSource == .manual ? base + " · 手动噪声段" : base
+        }
+    }
+
+    /// 噪声谱的来源。手动选区用的是**区间内的功率均值**，不做分位偏置补偿——
+    /// 区间整段都是噪声时均值本来就是对的，补偿反而会把噪声谱抬高 9.5 dB
+    enum NoiseSource: String, Codable, Hashable {
+        case auto
+        case manual
+
+        var label: String {
+            switch self {
+            case .auto: return "自动（整段最安静的 20%）"
+            case .manual: return "手动框选"
+            }
         }
     }
 
@@ -113,9 +130,11 @@ enum SpectralDenoiser {
     /// - Parameters:
     ///   - samples: 交织采样，范围 -1…1
     ///   - channels: 通道数
+    ///   - noiseRange: 手动指定的噪声取样区间（采样帧）。nil 或区间不可用时退回自动估计
     static func denoise(samples: [Float],
                         channels: Int,
-                        level: DenoiseLevel) -> (samples: [Float], report: Report?) {
+                        level: DenoiseLevel,
+                        noiseRange: Range<Int>? = nil) -> (samples: [Float], report: Report?) {
         guard level.isActive, !samples.isEmpty else { return (samples, nil) }
 
         let ch = max(1, channels)
@@ -123,7 +142,17 @@ enum SpectralDenoiser {
         // 短于两窗的素材估不出噪声谱，原样返回
         guard frames > fftSize * 2 else { return (samples, nil) }
 
-        let estimate = estimateNoise(samples, channels: ch, frames: frames)
+        var estimate = estimateNoise(samples, channels: ch, frames: frames)
+        var source = NoiseSource.auto
+
+        // 手动区间优先。区间太短 / 越界时静默退回自动，不报错——
+        // 用户框错了顶多是「回到原来的效果」，不该让整个导出失败
+        if let range = noiseRange,
+           let manual = estimateNoiseInRange(samples, channels: ch, frames: frames, range: range) {
+            estimate = manual
+            source = .manual
+        }
+
         guard estimate.sampledFrames > 0,
               estimate.power.contains(where: { $0 > 0 }) else {
             return (samples, nil)
@@ -141,7 +170,8 @@ enum SpectralDenoiser {
         let report = Report(noiseFloorDB: floorDB,
                             reductionDB: reduction,
                             sampledFrames: estimate.sampledFrames,
-                            level: level)
+                            level: level,
+                            noiseSource: source)
         return (output, report)
     }
 
@@ -224,6 +254,87 @@ enum SpectralDenoiser {
             smoothed[k] = (result[k - 1] + 2 * result[k] + result[k + 1]) / 4
         }
         return NoiseEstimate(power: smoothed, sampledFrames: sampled)
+    }
+
+    /// 用指定区间内的功率**均值**当噪声谱。
+    ///
+    /// 与自动估计只差两件事：区间由用户给定、取均值而不是 20% 分位。
+    /// 所以这里**不做** `quantileBias` 补偿——补偿是为了把「均值的 0.11 倍」
+    /// 还原成均值，均值再补一次就直接把噪声谱抬高 9.5 dB，等于没降噪还倒削人声。
+    ///
+    /// 帧仍按 hop 步进（75% 重叠），相邻帧有相关性但均值依然无偏，
+    /// 对平稳噪声没有影响。
+    static func estimateNoiseInRange(_ samples: [Float],
+                                     channels ch: Int,
+                                     frames: Int,
+                                     range: Range<Int>) -> NoiseEstimate? {
+        let n = fftSize
+        let bins = n / 2 + 1
+        let start = max(0, min(range.lowerBound, frames))
+        let end = max(0, min(range.upperBound, frames))
+        // 至少一个完整窗，否则全是补零，谱是假的
+        guard end - start >= n else { return nil }
+
+        let fft = RealFFT(n: n)
+        let window = sqrtHann(n)
+        let inv = 1 / Float(ch)
+
+        var sum = [Float](repeating: 0, count: bins)
+        var frame = [Float](repeating: 0, count: bins)
+        var re = [Float](repeating: 0, count: n)
+        var im = [Float](repeating: 0, count: n)
+        var count = 0
+
+        samples.withUnsafeBufferPointer { src in
+            window.withUnsafeBufferPointer { win in
+                sum.withUnsafeMutableBufferPointer { sumBuf in
+                    frame.withUnsafeMutableBufferPointer { frameBuf in
+                        re.withUnsafeMutableBufferPointer { reBuf in
+                            im.withUnsafeMutableBufferPointer { imBuf in
+                                guard let srcP = src.baseAddress,
+                                      let winP = win.baseAddress,
+                                      let sumP = sumBuf.baseAddress,
+                                      let frameP = frameBuf.baseAddress,
+                                      let reP = reBuf.baseAddress,
+                                      let imP = imBuf.baseAddress else { return }
+
+                                var position = start
+                                while position + n <= end {
+                                    for k in 0..<bins { frameP[k] = 0 }
+                                    for c in 0..<ch {
+                                        for i in 0..<n {
+                                            reP[i] = srcP[(position + i) * ch + c] * winP[i]
+                                            imP[i] = 0
+                                        }
+                                        fft.forward(re: reP, im: imP)
+                                        for k in 0..<bins {
+                                            frameP[k] += reP[k] * reP[k] + imP[k] * imP[k]
+                                        }
+                                    }
+                                    // 各通道平均后累加：多通道共用一个噪声谱
+                                    for k in 0..<bins { sumP[k] += frameP[k] * inv }
+                                    count += 1
+                                    position += hop
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        guard count > 0 else { return nil }
+
+        var result = [Float](repeating: 0, count: bins)
+        let scale = 1 / Float(count)
+        for k in 0..<bins { result[k] = sum[k] * scale }
+
+        // 频率方向 3 点平滑，与自动路径保持一致
+        var smoothed = result
+        for k in 1..<(bins - 1) {
+            smoothed[k] = (result[k - 1] + 2 * result[k] + result[k + 1]) / 4
+        }
+        return NoiseEstimate(power: smoothed, sampledFrames: count)
     }
 
     /// 抽样扫描，把每帧功率落进直方图

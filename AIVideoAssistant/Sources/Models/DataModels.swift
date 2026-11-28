@@ -28,6 +28,35 @@ struct VideoProject: Codable, Identifiable, Hashable {
 
 // MARK: - 导出设置
 
+/// 手动指定的噪声取样区间（时间线绝对时间，单位秒）。
+///
+/// 自动估计取的是「整段最安静的 20% 分位」——素材有停顿就好使，但口播从头到尾
+/// 压着底噪（空调 / 机箱风扇 / 房间混响）时，最安静的那 20% 也夹着人声尾音，
+/// 噪声谱会被估高，降噪就变成「连尾音一起削」。框一段确定只有噪声的区间，
+/// 直接取均值当噪声谱，比任何分位数都准。
+struct NoiseSample: Codable, Hashable {
+    var start: Double
+    var end: Double
+
+    /// 太短的区间凑不满两个 FFT 窗，估出来的谱全是边缘效应
+    static let minimumDuration: Double = 0.15
+
+    var duration: Double { max(0, end - start) }
+    var isValid: Bool { duration >= NoiseSample.minimumDuration }
+
+    /// 把区间夹到素材时长内；夹完不够长就返回 nil（当作没指定）
+    func clamped(to total: Double) -> NoiseSample? {
+        let s = max(0, min(start, total))
+        let e = max(0, min(end, total))
+        let result = NoiseSample(start: min(s, e), end: max(s, e))
+        return result.isValid ? result : nil
+    }
+
+    var summary: String {
+        String(format: "%.2f – %.2f 秒（%.2f 秒）", start, end, duration)
+    }
+}
+
 struct ExportSettings: Codable, Hashable {
     var resolution: ExportResolution = .r1080p
     var fps: Int = 30
@@ -39,6 +68,8 @@ struct ExportSettings: Codable, Hashable {
     var loudness: LoudnessTarget = .off
     /// 导出前的谱减降噪强度。关闭时完全不动音频
     var denoise: DenoiseLevel = .off
+    /// 手动框定的噪声取样区间。nil 表示自动估计（整段最安静的 20%）
+    var noiseSample: NoiseSample?
 
     init() {}
 
@@ -48,7 +79,8 @@ struct ExportSettings: Codable, Hashable {
          quality: ExportQuality = .high,
          fillMode: ExportFillMode = .fit,
          loudness: LoudnessTarget = .off,
-         denoise: DenoiseLevel = .off) {
+         denoise: DenoiseLevel = .off,
+         noiseSample: NoiseSample? = nil) {
         self.resolution = resolution
         self.fps = fps
         self.format = format
@@ -56,6 +88,7 @@ struct ExportSettings: Codable, Hashable {
         self.fillMode = fillMode
         self.loudness = loudness
         self.denoise = denoise
+        self.noiseSample = noiseSample
     }
 
     /// v1.17 及更早的项目文件没有 fillMode，缺字段时按「适应」处理
@@ -68,6 +101,7 @@ struct ExportSettings: Codable, Hashable {
         fillMode = (try? container.decodeIfPresent(ExportFillMode.self, forKey: .fillMode)) ?? .fit
         loudness = (try? container.decodeIfPresent(LoudnessTarget.self, forKey: .loudness)) ?? .off
         denoise = (try? container.decodeIfPresent(DenoiseLevel.self, forKey: .denoise)) ?? .off
+        noiseSample = try? container.decodeIfPresent(NoiseSample.self, forKey: .noiseSample)
     }
 
     /// 给界面看的一行摘要

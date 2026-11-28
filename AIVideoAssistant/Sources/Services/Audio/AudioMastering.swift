@@ -107,10 +107,13 @@ enum AudioMastering {
 
     // MARK: - 标准化
 
+    /// - Parameters:
+    ///   - noiseSample: 手动框定的噪声区间（时间线秒）。nil 时自动估计
     /// - Returns: 新合成（音频轨已被替换）+ 报告 + 临时 WAV 地址（调用方负责删）
     static func mastered(build: CompositionBuild,
                          target: LoudnessTarget,
                          denoise: DenoiseLevel = .off,
+                         noiseSample: NoiseSample? = nil,
                          progress: @escaping (Double, String) -> Void) async throws
         -> (build: CompositionBuild, report: Report?, tempURL: URL?) {
 
@@ -133,9 +136,14 @@ enum AudioMastering {
         // 先测后降会让最终响度整体偏高（目标 −14 出成 −12）
         if denoise.isActive {
             await MainActor.run { progress(0.08, "正在降噪…") }
+            let range = noiseFrameRange(sample: noiseSample,
+                                        sampleRate: pcm.sampleRate,
+                                        channels: pcm.channels,
+                                        sampleCount: samples.count)
             let outcome = SpectralDenoiser.denoise(samples: samples,
                                                    channels: pcm.channels,
-                                                   level: denoise)
+                                                   level: denoise,
+                                                   noiseRange: range)
             samples = outcome.samples
             denoiseReport = outcome.report
         }
@@ -192,6 +200,29 @@ enum AudioMastering {
                                        audioMix: nil,
                                        duration: build.duration)
         return (rebuilt, report, temp)
+    }
+
+    /// 时间线秒 → 采样帧区间。
+    ///
+    /// 这里不做「时间线时间 → 合成时间」的换算：`renderPCM` 读的是整条合成，
+    /// 输出起点就是合成起点，两者本来就对齐。区间越界或太短时返回 nil，
+    /// 让降噪器退回自动估计。
+    static func noiseFrameRange(sample: NoiseSample?,
+                                sampleRate: Double,
+                                channels: Int,
+                                sampleCount: Int) -> Range<Int>? {
+        guard let sample else { return nil }
+        let ch = max(1, channels)
+        let frames = sampleCount / ch
+        guard frames > 0 else { return nil }
+
+        let a = Int((sample.start * sampleRate).rounded())
+        let b = Int((sample.end * sampleRate).rounded())
+        let lo = max(0, min(min(a, b), frames))
+        let hi = max(0, min(max(a, b), frames))
+        // 少于一个 FFT 窗估不出谱，交给自动路径
+        guard hi - lo >= SpectralDenoiser.fftSize else { return nil }
+        return lo..<hi
     }
 
     // MARK: - 读 PCM

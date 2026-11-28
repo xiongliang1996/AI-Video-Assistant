@@ -44,7 +44,8 @@ final class VideoExporter {
         if settings.loudness != .off || settings.denoise != .off {
             let result = try await AudioMastering.mastered(build: build,
                                                            target: settings.loudness,
-                                                           denoise: settings.denoise) { value, message in
+                                                           denoise: settings.denoise,
+                                                           noiseSample: settings.noiseSample) { value, message in
                 progress(0.05 + value * 0.6, message)
             }
             build = result.build

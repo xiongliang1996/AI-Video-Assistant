@@ -54,8 +54,9 @@ struct SettingsView: View {
                 footer
             }
         }
-        // 导出页有降噪与响度两栏，600 高已经要滚动才看得全
-        .frame(width: 648, height: 668)
+        // 导出页有降噪（含噪声取样）、响度两栏，668 高时底部「自动打开」那行
+        // 会被裁掉一半，加 40pt 让整页一屏能看全
+        .frame(width: 648, height: 708)
         .background(Theme.panel)
         .onAppear { draft = appState.aiConfig }
     }
@@ -346,8 +347,52 @@ struct SettingsView: View {
             note(appState.currentProject.settings.denoise.note, icon: "waveform.badge.minus")
 
             if appState.currentProject.settings.denoise.isActive {
-                note("噪声谱取整段最安静的 20%，导出时会多花一点时间重写整条音轨", icon: "clock")
+                noiseSampleRow
             }
+        }
+    }
+
+    /// 噪声谱来源：自动分位 / 手动框选。手动那段解决「整段都有底噪」的素材
+    private var noiseSampleRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Button {
+                    appState.beginNoisePick()
+                } label: {
+                    Label("在时间线上框选", systemImage: "waveform.path.ecg.rectangle")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(Theme.accent)
+
+                if let sample = appState.currentNoiseSample {
+                    Text(sample.summary)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Theme.text3)
+                        .lineLimit(1)
+
+                    Button {
+                        appState.clearNoiseSample()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Theme.text3)
+                    }
+                    .buttonStyle(.plain)
+                    .help("恢复自动估计")
+                } else {
+                    Text("自动 · 整段最安静的 20%")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Theme.text3)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            note(appState.currentNoiseSample == nil
+                 ? "素材几乎没有停顿、底噪又重时，自动估计会把噪声谱估高，降噪会连尾音一起削。框一段确定只有噪声的位置更准"
+                 : "这段区间的功率均值直接当噪声谱，不再取分位",
+                 icon: "waveform")
         }
     }
 

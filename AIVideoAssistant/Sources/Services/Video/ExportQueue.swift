@@ -194,6 +194,7 @@ final class ExportQueue: ObservableObject {
                                                    to: next.outputURL,
                                                    loudness: payload.settings.loudness,
                                                    denoise: payload.settings.denoise,
+                                                   noiseSample: payload.settings.noiseSample,
                                                    progress: report)
                 }
                 await self.finish(next.id, state: .done, message: "导出完成")

@@ -63,7 +63,7 @@ struct TimelineView: View {
                             RulerView(pps: pps, seconds: rulerSeconds)
                                 .frame(height: 22)
                                 .contentShape(Rectangle())
-                                .gesture(scrubGesture)
+                                .gesture(rulerGesture)
 
                             track(for: .video, lane: 0)
                             track(for: .video, lane: 1)
@@ -71,6 +71,8 @@ struct TimelineView: View {
                             track(for: .audio, lane: 1)
                             track(for: .subtitle, lane: 0)
                         }
+
+                        noiseBand
 
                         if let snapTime {
                             snapLine(at: snapTime)
@@ -105,6 +107,10 @@ struct TimelineView: View {
         .background(Theme.panel2)
         .overlay(alignment: .top) {
             Rectangle().fill(Theme.line).frame(height: 1)
+        }
+        // 框选时按 Esc 退出，不用去找取消按钮
+        .onExitCommand {
+            if appState.noisePickMode { appState.cancelNoisePick() }
         }
     }
 
@@ -192,19 +198,23 @@ struct TimelineView: View {
 
             Spacer()
 
-            HStack(spacing: 6) {
-                Image(systemName: "minus.magnifyingglass")
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(Theme.text3)
-                Slider(value: Binding(get: { appState.timelineZoom },
-                                      set: { appState.timelineZoom = $0 }),
-                       in: AppState.timelineZoomRange)
-                    .controlSize(.mini)
-                    .tint(Theme.accent)
-                    .frame(width: 74)
-                Image(systemName: "plus.magnifyingglass")
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(Theme.text3)
+            if appState.noisePickMode {
+                noisePickBar
+            } else {
+                HStack(spacing: 6) {
+                    Image(systemName: "minus.magnifyingglass")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(Theme.text3)
+                    Slider(value: Binding(get: { appState.timelineZoom },
+                                          set: { appState.timelineZoom = $0 }),
+                           in: AppState.timelineZoomRange)
+                        .controlSize(.mini)
+                        .tint(Theme.accent)
+                        .frame(width: 74)
+                    Image(systemName: "plus.magnifyingglass")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(Theme.text3)
+                }
             }
         }
         .padding(.horizontal, 10)
@@ -212,6 +222,33 @@ struct TimelineView: View {
         .overlay(alignment: .bottom) {
             Rectangle().fill(Theme.line).frame(height: 1)
         }
+    }
+
+    /// 框选模式的提示条：实时显示拖出来的区间长度，避免「拖完才发现太短」
+    private var noisePickBar: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "waveform.badge.minus")
+                .font(.system(size: 10.5))
+                .foregroundStyle(Theme.accent)
+
+            Text(appState.noiseDraft.map { "噪声段 \($0.summary)" }
+                 ?? "在标尺上拖出一段只有噪声的位置")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.text2)
+                .lineLimit(1)
+
+            Button {
+                appState.cancelNoisePick()
+            } label: {
+                Text("取消")
+                    .font(.system(size: 11))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.text3)
+        }
+        .padding(.horizontal, 9)
+        .frame(height: 22)
+        .background(Theme.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 5))
     }
 
     private var trackHeads: some View {
@@ -434,14 +471,71 @@ struct TimelineView: View {
         }
     }
 
-    // MARK: - 播放头拖动
+    // MARK: - 播放头拖动 / 框选噪声段
 
-    private var scrubGesture: some Gesture {
+    /// 标尺上的拖拽有两种含义：平时拖播放头，框噪声段时拉选区。
+    ///
+    /// 不拆成两个 `AnyGesture` 是因为两个 `some Gesture` 的 Value 在类型检查器眼里
+    /// 不是同一个类型（opaque type 不做同一性推断），合成会直接编译失败。
+    /// 一个手势内部按模式分支，逻辑更短也更好读。
+    private var rulerGesture: some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
-                let time = max(0, Double(value.location.x / pps))
-                appState.seek(to: time)
+                if appState.noisePickMode {
+                    appState.noiseDraft = noiseInterval(value)
+                } else {
+                    appState.seek(to: max(0, Double(value.location.x / pps)))
+                }
             }
+            .onEnded { value in
+                guard appState.noisePickMode else { return }
+                let interval = noiseInterval(value)
+                // 原地单击不算框选：静默退出，别弹「太短」的提示
+                guard interval.duration > 0.02 else {
+                    appState.noiseDraft = nil
+                    return
+                }
+                appState.commitNoisePick(start: interval.start, end: interval.end)
+            }
+    }
+
+    /// 一次拖拽覆盖的区间（秒）。方向不限，这里直接排好序
+    private func noiseInterval(_ value: DragGesture.Value) -> NoiseSample {
+        let a = max(0, Double(value.startLocation.x / pps))
+        let b = max(0, Double(value.location.x / pps))
+        return NoiseSample(start: min(a, b), end: max(a, b))
+    }
+
+    /// 噪声取样区间的色带。跨满整条轨道区，一眼能看到是哪一段在当噪声谱
+    @ViewBuilder
+    private var noiseBand: some View {
+        let sample = appState.noisePickMode
+            ? (appState.noiseDraft ?? appState.currentNoiseSample)
+            : appState.currentNoiseSample
+
+        if let sample, sample.duration > 0 {
+            let width = max(1, CGFloat(sample.duration) * pps)
+            Rectangle()
+                .fill(Theme.accent.opacity(appState.noisePickMode ? 0.20 : 0.11))
+                .frame(width: width, height: 22 + trackHeight * 5)
+                .overlay(alignment: .top) {
+                    Rectangle()
+                        .fill(Theme.accent.opacity(0.9))
+                        .frame(height: 2)
+                }
+                .overlay(alignment: .leading) {
+                    Rectangle()
+                        .fill(Theme.accent.opacity(0.9))
+                        .frame(width: 1)
+                }
+                .overlay(alignment: .trailing) {
+                    Rectangle()
+                        .fill(Theme.accent.opacity(0.9))
+                        .frame(width: 1)
+                }
+                .offset(x: CGFloat(sample.start) * pps)
+                .allowsHitTesting(false)
+        }
     }
 
     // MARK: - 拖拽逻辑
